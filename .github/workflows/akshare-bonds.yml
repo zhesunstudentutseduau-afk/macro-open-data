@@ -1,0 +1,136 @@
+name: AKShare 国债数据采集
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 14 * * 1-5'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: pip install akshare pandas
+
+      - name: Download and check
+        run: |
+          python - <<'PY'
+          import akshare as ak
+          import pandas as pd
+          import json
+          from pathlib import Path
+
+          fields = {
+              '中国国债收益率2年': 'CN_2Y_pct',
+              '中国国债收益率5年': 'CN_5Y_pct',
+              '中国国债收益率10年': 'CN_10Y_pct',
+              '美国国债收益率2年': 'US_2Y_pct',
+              '美国国债收益率5年': 'US_5Y_pct',
+              '美国国债收益率10年': 'US_10Y_pct',
+          }
+
+          raw = ak.bond_zh_us_rate(start_date='20160101')
+
+          if not set(fields).union({'日期'}).issubset(raw.columns):
+              raise RuntimeError(f'接口字段变化：{list(raw.columns)}')
+
+          df = raw[['日期', *fields]].copy()
+          df['日期'] = pd.to_datetime(df['日期'], errors='coerce')
+          df = df.dropna(subset=['日期']).sort_values('日期')
+          df = df.drop_duplicates('日期', keep='last')
+
+          for col in fields:
+              df[col] = pd.to_numeric(df[col], errors='coerce')
+
+          if len(df) < 100 or df[list(fields)].notna().sum().sum() < 100:
+              raise RuntimeError('获取的数据太少，拒绝覆盖旧文件')
+
+          last_month = pd.Timestamp.now(
+              tz='Asia/Shanghai'
+          ).to_period('M') - 1
+
+          df = df[
+              df['日期'].dt.to_period('M') <= last_month
+          ].copy()
+
+          df['month'] = df['日期'].dt.to_period('M').astype(str)
+
+          monthly = pd.DataFrame({
+              'month': pd.period_range(
+                  '2016-01', last_month, freq='M'
+              ).astype(str)
+          })
+
+          for old, new in fields.items():
+              sub = df.dropna(subset=[old])
+              sub = sub.groupby('month').tail(1)
+              sub = sub[['month', '日期', old]]
+              sub = sub.rename(columns={
+                  '日期': new + '_date',
+                  old: new
+              })
+
+              monthly = monthly.merge(
+                  sub, on='month', how='left',
+                  validate='one_to_one'
+              )
+
+              monthly[new + '_date'] = (
+                  monthly[new + '_date'].dt.strftime('%Y-%m-%d')
+              )
+
+          out = Path('data')
+          out.mkdir(exist_ok=True)
+
+          daily = df[['日期', *fields]].rename(columns=fields)
+
+          daily.to_csv(
+              out / 'china_us_yields_daily.csv',
+              index=False,
+              encoding='utf-8-sig'
+          )
+
+          monthly.to_csv(
+              out / 'china_us_yields_monthend.csv',
+              index=False,
+              encoding='utf-8-sig'
+          )
+
+          quality = {
+              col: {
+                  'valid_months': int(monthly[col].notna().sum()),
+                  'missing_months': monthly.loc[
+                      monthly[col].isna(), 'month'
+                  ].tolist()
+              }
+              for col in fields.values()
+          }
+
+          (out / 'data_quality.json').write_text(
+              json.dumps(quality, ensure_ascii=False, indent=2),
+              encoding='utf-8'
+          )
+
+          print('数据采集完成:', len(daily), '条日度记录')
+          print('月度数据:', len(monthly), '个月')
+          print(json.dumps(quality, ensure_ascii=False))
+          PY
+
+      - name: Save data to GitHub
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update bond yields'
+            git push
+          fi
