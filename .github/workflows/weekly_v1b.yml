@@ -233,19 +233,79 @@ jobs:
           
           
           def read_fred(series):
-              # 无需FRED API Token的CSV公开接口；失败时不伪造，不插值
-              u=f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}&cosd=2016-01-01'
-              df=download_csv(u)
-              col=series if series in df else df.columns[-1]
-              datecol='observation_date' if 'observation_date' in df else df.columns[0]
-              res=pd.DataFrame({'date':pd.to_datetime(df[datecol],errors='coerce'),series:pd.to_numeric(df[col],errors='coerce')})
-              res=res.dropna(subset=['date']).sort_values('date').drop_duplicates('date',keep='last')
-              res=res[res.date>=pd.Timestamp('2016-01-01')]
-              res.to_csv(ROOT/f'{series}_fred_daily.csv',index=False,encoding='utf-8-sig')
-              if res[series].notna().sum()<1000:raise RuntimeError(f'{series}: insufficient data')
-              return res
-          
-          
+              """H.10 daily Fed data: direct Board historical tables first, FRED CSV fallback.
+              DEXCHUS = CNY per USD; DTWEXBGS = 2006-base nominal broad USD index.
+              No proxy substitutions, missing-value interpolation or silent stale data.
+              """
+              from bs4 import BeautifulSoup
+              import re
+              fed_pages={
+                  'DEXCHUS':'https://www.federalreserve.gov/releases/h10/hist/dat00_ch.htm',
+                  'DTWEXBGS':'https://www.federalreserve.gov/releases/h10/summary/jrxwtfb_nb.htm',
+              }
+              if series not in fed_pages:raise ValueError('Unrecognized Fed H10 series '+series)
+
+              def normalize(raw):
+                  if not {'date',series}.issubset(raw.columns):
+                      raise ValueError(series+' missing required date/value fields '+str(raw.columns.tolist()))
+                  res=raw[['date',series]].copy()
+                  res['date']=pd.to_datetime(res['date'],errors='coerce')
+                  res[series]=pd.to_numeric(res[series],errors='coerce')
+                  res=res.dropna(subset=['date']).drop_duplicates('date',keep='last').sort_values('date')
+                  res=res[res.date>=pd.Timestamp('2016-01-01')]
+                  valid=res.dropna(subset=[series])
+                  if len(valid)<1600:raise RuntimeError(f'{series}: too few valid daily rows: {len(valid)}')
+                  if valid.date.min()>pd.Timestamp('2017-01-01'):
+                      raise RuntimeError(f'{series}: first available date too late {valid.date.min()}')
+                  last=valid.date.max()
+                  age=(pd.Timestamp.today().normalize()-last).days
+                  if age>35:raise RuntimeError(f'{series}: stale last non-missing observation: {last.date()} age {age}d')
+                  if series=='DEXCHUS' and not valid[series].between(3,12).all():
+                      raise RuntimeError('CNY per USD outside broad sanity range, check units')
+                  if series=='DTWEXBGS' and not valid[series].between(50,250).all():
+                      raise RuntimeError('Broad USD index outside broad sanity range, check units')
+                  return res
+
+              errors=[]
+              # The original FRED fredgraph.csv timed out in GitHub Actions #2.
+              # Use the Federal Reserve Board's publicly displayed original H.10 daily history.
+              try:
+                  url=fed_pages[series]
+                  r=requests.get(url,timeout=(12,40),headers={'User-Agent':'Mozilla/5.0 (academic macro data research)'})
+                  r.raise_for_status()
+                  soup=BeautifulSoup(r.text,'html.parser')
+                  rows=[]
+                  for tr in soup.find_all('tr'):
+                      cells=[c.get_text(' ',strip=True) for c in tr.find_all(['td','th'],recursive=False)]
+                      if len(cells)>=2 and re.fullmatch(r'\d{1,2}-[A-Za-z]{3}-\d{2}',cells[0]):
+                          rows.append((cells[0],cells[1]))
+                  if len(rows)<1600:raise RuntimeError(f'Fed H10 history parser found only {len(rows)} rows')
+                  # Fixed format prevents an ambiguous day/month interpretation.
+                  tmp=pd.DataFrame(rows,columns=['raw_date',series])
+                  tmp['date']=pd.to_datetime(tmp.pop('raw_date'),format='%d-%b-%y',errors='coerce')
+                  out=normalize(tmp)
+                  source='Federal Reserve Board H.10 historical daily HTML: '+url
+              except Exception as exc:
+                  errors.append(('Federal Reserve Board H.10',str(exc)[:300]))
+                  print('WARN: Fed Board H.10 unavailable, trying original FRED CSV',series,str(exc)[:300],flush=True)
+                  try:
+                      u=f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}&cosd=2016-01-01'
+                      df=download_csv(u,tries=1)
+                      vcol=series if series in df else df.columns[-1]
+                      dcol='observation_date' if 'observation_date' in df else df.columns[0]
+                      out=normalize(pd.DataFrame({'date':df[dcol],series:df[vcol]}))
+                      source='FRED original fredgraph.csv: '+u
+                  except Exception as exc2:
+                      errors.append(('FRED CSV',str(exc2)[:300]))
+                      raise RuntimeError(f'H10 daily data unavailable for {series}: '+repr(errors)) from exc2
+              out.to_csv(ROOT/f'{series}_fred_daily.csv',index=False,encoding='utf-8-sig')
+              (ROOT/f'{series}_source.txt').write_text(source,encoding='utf-8')
+              print('H10_SERIES_OK',series,'source=',source,
+                    'valid_n=',out[series].notna().sum(),
+                    'first=',out.date.min().date(),'last=',out.loc[out[series].notna(),'date'].max().date(),flush=True)
+              return out
+
+
           def make_week(dates):
               return dates.dt.to_period('W-FRI').dt.end_time.dt.normalize()
           
@@ -419,7 +479,8 @@ jobs:
           
           def quality(fac,prices,idx,etf,fx,dol):
               d={'raw_bond_source':REPO+'china_us_yields_daily.csv',
-                 'raw_fred_series':['DEXCHUS','DTWEXBGS'],
+                 'fed_h10_series':['DEXCHUS','DTWEXBGS'],
+                 'fed_h10_sources':{k:(ROOT/f'{k}_source.txt').read_text(encoding='utf-8') if (ROOT/f'{k}_source.txt').exists() else 'unknown' for k in ['DEXCHUS','DTWEXBGS']},
                  'price_sources':[
                   (ROOT/'csi500_source.txt').read_text(encoding='utf-8') if (ROOT/'csi500_source.txt').exists() else 'unknown',
                   (ROOT/'etf_source.txt').read_text(encoding='utf-8') if (ROOT/'etf_source.txt').exists() else 'unknown'],
@@ -509,7 +570,7 @@ jobs:
               summary.to_csv(ROOT/'weekly_v1b_summary.csv',index=False,encoding='utf-8-sig')
               pd.DataFrame(nextsignal).to_csv(ROOT/'latest_signal_research_only.csv',index=False,encoding='utf-8-sig')
               # align by actual shared range if different h initial: honest benchmarks only for each model-specific universe
-              report=f'''# 中证500 周频 V1/B 探索性研究（自动生成）\n\n**尚未对接实盘、不能承诺未来收益。**\n\n本次8组组合：V1和B分别预测未来t+1、t+2、t+4、t+8周的**该周单周ETF持有收益**。\n\n中美债券使用原月频研究的“中方最后可用、美国周均”混合口径。汇率、广义美元指数使用FRED日度值的周均。\n\n每周五收集因子，保守到下一周周四或周五开盘开始交易。中证500指数下一可交易周收益是回归训练标签，510500 ETF复权开盘到开盘收益用于策略回测。\n\n采用从2016年开始扩展窗口OLS；研究回测开始于2021年3月。仅使用在预测时点已经结束的历史标签，不用目标周未来值参与训练。\n\n每次仓位从0到1或1到0，扣交易成本0.1%，现金收益暂按零。成本尚不包含ETF开盘冲击、真实报单限制及基金实际分红处理。\n\n|模型|预测期(周)|有效周|累计策略%|ETF买入持有%|方向准确率%|最大回撤%|年化Alpha%|HAC p值|\n|---|---:|---:|---:|---:|---:|---:|---:|---:|\n'''
+              report=f'''# 中证500 周频 V1/B 探索性研究（自动生成）\n\n**尚未对接实盘、不能承诺未来收益。**\n\n本次8组组合：V1和B分别预测未来t+1、t+2、t+4、t+8周的**该周单周ETF持有收益**。\n\n中美债券使用原月频研究的“中方最后可用、美国周均”混合口径。汇率、广义美元指数使用美联储H.10日度数据（优先美联储官网、FRED备用）的周均，保留原始来源和缺失值。\n\n每周五收集因子，保守到下一周周四或周五开盘开始交易。中证500指数下一可交易周收益是回归训练标签，510500 ETF复权开盘到开盘收益用于策略回测。\n\n采用从2016年开始扩展窗口OLS；研究回测开始于2021年3月。仅使用在预测时点已经结束的历史标签，不用目标周未来值参与训练。\n\n每次仓位从0到1或1到0，扣交易成本0.1%，现金收益暂按零。成本尚不包含ETF开盘冲击、真实报单限制及基金实际分红处理。\n\n|模型|预测期(周)|有效周|累计策略%|ETF买入持有%|方向准确率%|最大回撤%|年化Alpha%|HAC p值|\n|---|---:|---:|---:|---:|---:|---:|---:|---:|\n'''
               for m in summ:
                   report+=f"|{m['model']}|{m['horizon_weeks']}|{m['n']}|{m['strategy_total_pct']:.2f}|{m['etf_buyhold_pct']:.2f}|{m['accuracy_pct']:.2f}|{m['max_drawdown_pct']:.2f}|{m['alpha_annual_pct']:.2f}|{m['alpha_pvalue_HAC4']:.3g}|\n"
               report+='''\n## 数据质量与限制\n\n- 原始数据来源与有效日期见 `data_quality.json`，全量逐周因子见 `weekly_macro_factors.csv`。\n- 严格区分真实指数、510500 ETF以及交易时点。ETF日度复权开盘价仅为历史代理价格，不是用户可保证成交的价格。\n- 美联储H.10的外汇与广义美元指数通常于美国星期一16:15公布上一周观测；美国节假日推迟。周四交易缓冲是假设，未逐次核对历史实际公布日志。\n- 国债收益率日度数据可能含周末记录；这份程序剔除非周一至周五的债券数据，并保留缺失值。\n- 以过去数据不断选取V1/B/horizon属于历史探索，多次比较的名义显著性不可当作独立证据。\n- 项目之前已建立的月频V1/B不会在本次执行中修改。\n'''
