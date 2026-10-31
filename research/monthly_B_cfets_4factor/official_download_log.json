@@ -1,0 +1,122 @@
+[
+  {
+    "year": 2015,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2015-12-01&endDate=2015-12-31&t=1793470041909",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2015-12-01&endDate=2015-12-31&t=1793470041909",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2015-12-01&endDate=2015-12-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2015-12-01&endDate=2015-12-31&t=17"
+    ]
+  },
+  {
+    "year": 2016,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2016-01-01&endDate=2016-12-31&t=1793470043647",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2016-01-01&endDate=2016-12-31&t=1793470043647",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2016-01-01&endDate=2016-12-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2016-01-01&endDate=2016-12-31&t=17"
+    ]
+  },
+  {
+    "year": 2017,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2017-01-01&endDate=2017-12-31&t=1793470045026",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2017-01-01&endDate=2017-12-31&t=1793470045026",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2017-01-01&endDate=2017-12-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2017-01-01&endDate=2017-12-31&t=17"
+    ]
+  },
+  {
+    "year": 2018,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2018-01-01&endDate=2018-12-31&t=1793470046374",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2018-01-01&endDate=2018-12-31&t=1793470046374",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2018-01-01&endDate=2018-12-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2018-01-01&endDate=2018-12-31&t=17"
+    ]
+  },
+  {
+    "year": 2019,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2019-01-01&endDate=2019-12-31&t=1793470048096",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2019-01-01&endDate=2019-12-31&t=1793470048096",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2019-01-01&endDate=2019-12-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2019-01-01&endDate=2019-12-31&t=17"
+    ]
+  },
+  {
+    "year": 2020,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2020-01-01&endDate=2020-12-31&t=1793470049467",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2020-01-01&endDate=2020-12-31&t=1793470049467",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2020-01-01&endDate=2020-12-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2020-01-01&endDate=2020-12-31&t=17"
+    ]
+  },
+  {
+    "year": 2021,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2021-01-01&endDate=2021-12-31&t=1793470050871",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2021-01-01&endDate=2021-12-31&t=1793470050871",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2021-01-01&endDate=2021-12-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2021-01-01&endDate=2021-12-31&t=17"
+    ]
+  },
+  {
+    "year": 2022,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2022-01-01&endDate=2022-12-31&t=1793470052242",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2022-01-01&endDate=2022-12-31&t=1793470052242",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2022-01-01&endDate=2022-12-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2022-01-01&endDate=2022-12-31&t=17"
+    ]
+  },
+  {
+    "year": 2023,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2023-01-01&endDate=2023-12-31&t=1793470053608",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2023-01-01&endDate=2023-12-31&t=1793470053608",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2023-01-01&endDate=2023-12-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2023-01-01&endDate=2023-12-31&t=17"
+    ]
+  },
+  {
+    "year": 2024,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2024-01-01&endDate=2024-12-31&t=1793470054972",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2024-01-01&endDate=2024-12-31&t=1793470054972",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2024-01-01&endDate=2024-12-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2024-01-01&endDate=2024-12-31&t=17"
+    ]
+  },
+  {
+    "year": 2025,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2025-01-01&endDate=2025-12-31&t=1793470056348",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2025-01-01&endDate=2025-12-31&t=1793470056348",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2025-01-01&endDate=2025-12-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2025-01-01&endDate=2025-12-31&t=17"
+    ]
+  },
+  {
+    "year": 2026,
+    "status": "FAIL",
+    "errors": [
+      "www.chinamoney.com.cn POST: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2026-01-01&endDate=2026-08-31&t=1793470057755",
+      "www.chinamoney.com.cn GET: HTTPError 403 Client Error: Forbidden for url: https://www.chinamoney.com.cn/dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2026-01-01&endDate=2026-08-31&t=1793470057755",
+      "www.chinamoney.org.cn POST: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2026-01-01&endDate=2026-08-31&t=17",
+      "www.chinamoney.org.cn GET: SSLError HTTPSConnectionPool(host='www.chinamoney.org.cn', port=443): Max retries exceeded with url: /dqs/rest/cm-u-bk-fx/RmbIdxHisExcel?lang=CN&startDate=2026-01-01&endDate=2026-08-31&t=17"
+    ]
+  }
+]
