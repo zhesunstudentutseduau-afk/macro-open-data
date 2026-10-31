@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install required research libraries
-        run: python -m pip install -U akshare pandas numpy statsmodels requests
+        run: python -m pip install -U akshare baostock pandas numpy statsmodels requests
       - name: Run self-test, download real data, fit regressions, and backtest
         run: |
           mkdir -p research/weekly_v1b
@@ -90,43 +90,118 @@ jobs:
               return df
           
           
+          def validate_market_coverage(data, tag):
+              # Never silently use short/stale market data: that would distort the walk-forward sample.
+              first, last = data.date.min(), data.date.max()
+              if first > pd.Timestamp('2017-01-01'):
+                  raise ValueError(f'{tag} starts too late for 2016 baseline: {first.date()}')
+              if last < pd.Timestamp.today().normalize() - pd.Timedelta(days=21):
+                  raise ValueError(f'{tag} stale: last date {last.date()}')
+              print(tag, 'COVERAGE_OK', str(first.date()), str(last.date()), 'n=', len(data), flush=True)
+              return data
+
+
+          def _baostock_worker(code, adjustflag, output):
+              """Child process: BaoStock has had reports of unbounded TCP reads."""
+              import baostock as bs
+              import socket
+              socket.setdefaulttimeout(25)
+              try:
+                  print('BAOSTOCK child connecting',code,flush=True)
+                  lg=bs.login()
+                  if lg.error_code!='0':
+                      raise RuntimeError(f'Login failed: {lg.error_code} {lg.error_msg}')
+                  try:
+                      q=bs.query_history_k_data_plus(code,'date,open,close',
+                          start_date='2016-01-01',end_date=pd.Timestamp.today().strftime('%Y-%m-%d'),
+                          frequency='d',adjustflag=adjustflag)
+                      if q.error_code!='0':
+                          raise RuntimeError(f'Query error: {q.error_code} {q.error_msg}')
+                      rows=[]
+                      while q.next():rows.append(q.get_row_data())
+                      pd.DataFrame(rows,columns=q.fields).to_csv(output,index=False)
+                      print('BAOSTOCK child complete',code,len(rows),flush=True)
+                  finally:bs.logout()
+              except Exception as exc:
+                  Path(output+'.error').write_text(repr(exc),encoding='utf-8')
+                  raise
+
+
+          def baostock_daily(code,adjustflag='3'):
+              import multiprocessing as mp
+              # Terminate a stuck provider process instead of hanging the entire weekly job.
+              target=ROOT/('baostock_'+code.replace('.','_')+'_'+adjustflag+'.tmp.csv')
+              ctx=mp.get_context('fork')  # GitHub-hosted runner is ubuntu-latest
+              proc=ctx.Process(target=_baostock_worker,args=(code,adjustflag,str(target)))
+              proc.start();proc.join(timeout=75)
+              if proc.is_alive():
+                  proc.terminate();proc.join(timeout=5)
+                  raise RuntimeError(f'Baostock timeout after 75s: {code}')
+              if proc.exitcode!=0 or not target.exists():
+                  err=Path(str(target)+'.error')
+                  raise RuntimeError(f'Baostock failed: {code}, exit={proc.exitcode}, details=' +
+                      (err.read_text(encoding='utf-8') if err.exists() else 'no details'))
+              result=pd.read_csv(target)
+              target.unlink(missing_ok=True)
+              return result
+
+
           def read_market():
               import akshare as ak
+
+              # We must use CSI500 PRICE index (000905), not total-return index or CSI300.
+              # Two legacy Eastmoney APIs failed on the initial 2026-10-31 Actions run.
+              # Fallbacks query independent providers; all must pass the same quality checks.
               def fallback_index():
                   errors=[]
-                  for key,fn in [
-                      ('stock_zh_index_daily_em csi000905',lambda: ak.stock_zh_index_daily_em(symbol='csi000905',start_date=START,end_date=END)),
-                      ('index_zh_a_hist 000905',lambda:ak.index_zh_a_hist(symbol='000905',period='daily',start_date=START,end_date=END)),
-                  ]:
+                  providers=[
+                      ('CSI official index_zh_a_hist_csindex 000905',
+                       lambda:ak.stock_zh_index_hist_csindex(symbol='000905',start_date=START,end_date=END)),
+                      ('Sina stock_zh_index_daily sh000905',
+                       lambda:ak.stock_zh_index_daily(symbol='sh000905')),
+                      ('baostock sh.000905',lambda:baostock_daily('sh.000905')),
+                      ('Eastmoney stock_zh_index_daily_em csi000905',
+                       lambda:ak.stock_zh_index_daily_em(symbol='csi000905',start_date=START,end_date=END)),
+                      ('Eastmoney index_zh_a_hist 000905',
+                       lambda:ak.index_zh_a_hist(symbol='000905',period='daily',start_date=START,end_date=END)),
+                  ]
+                  for label,fn in providers:
                       try:
-                          res=fn()
-                          print('Index datasource',key,'rows',len(res))
-                          return normalize_price(res,'csi500_index')
-                      except Exception as e:
-                          errors.append((key,str(e)[:300]))
-                  raise RuntimeError(f'All CSI500 index data endpoints failed: {errors}')
+                          raw=fn()
+                          print('CSI500 source candidate',label,'rows',len(raw),flush=True)
+                          ret=validate_market_coverage(normalize_price(raw,'csi500_index'), 'CSI500 '+label)
+                          (ROOT/'csi500_source.txt').write_text(label,encoding='utf-8')
+                          return ret
+                      except Exception as exc:
+                          errors.append((label,str(exc)[:500]))
+                          print('CSI500 source rejected:',label,str(exc)[:500],flush=True)
+                  raise RuntimeError('All independent CSI500 index sources failed: '+repr(errors))
+
               def fallback_etf():
                   errors=[]
-                  for adj in ['hfq','qfq']:
+                  providers=[
+                      ('Eastmoney ETF hfq', lambda:ak.fund_etf_hist_em(symbol='510500',period='daily',start_date=START,end_date=END,adjust='hfq'), 'hfq'),
+                      ('Baostock ETF hfq',lambda:baostock_daily('sh.510500',adjustflag='1'),'hfq_baostock'),
+                      ('Eastmoney ETF qfq',lambda:ak.fund_etf_hist_em(symbol='510500',period='daily',start_date=START,end_date=END,adjust='qfq'),'qfq'),
+                      ('Sina ETF unadjusted',lambda:ak.fund_etf_hist_sina(symbol='sh510500'),'none: Sina unadjusted; distributions ignored'),
+                  ]
+                  for label,fn,adj in providers:
                       try:
-                          raw=ak.fund_etf_hist_em(symbol='510500',period='daily',start_date=START,end_date=END,adjust=adj)
-                          print('ETF datasource fund_etf_hist_em adjust=',adj,'rows',len(raw))
-                          ret=normalize_price(raw,'etf510500_adjusted')
-                          (ROOT / 'etf_adjust_used.txt').write_text(adj,encoding='utf-8')
+                          raw=fn()
+                          print('ETF source candidate',label,'rows',len(raw),flush=True)
+                          ret=validate_market_coverage(normalize_price(raw,'etf510500_adjusted'),'ETF '+label)
+                          (ROOT/'etf_adjust_used.txt').write_text(adj,encoding='utf-8')
+                          (ROOT/'etf_source.txt').write_text(label,encoding='utf-8')
+                          if adj.startswith('none'):
+                              print('QUALITY WARNING: unadjusted ETF prices omit cash distributions; results are price-only and require audit',flush=True)
                           return ret
-                      except Exception as e:errors.append((adj,str(e)[:300]))
-                  # Final fallback: Sina unadjusted prices. This EXCLUDES ETF cash dividends; flag clearly.
-                  try:
-                      raw=ak.fund_etf_hist_sina(symbol='sh510500')
-                      print('ETF datasource fund_etf_hist_sina (UNADJUSTED; dividend bias)',len(raw),flush=True)
-                      ret=normalize_price(raw,'etf510500_adjusted')
-                      (ROOT / 'etf_adjust_used.txt').write_text('none: Sina unadjusted; cash dividend not included',encoding='utf-8')
-                      return ret
-                  except Exception as e:errors.append(('Sina unadjusted',str(e)[:300]))
-                  raise RuntimeError(f'All ETF data endpoints failed: {errors}')
+                      except Exception as exc:
+                          errors.append((label,str(exc)[:500]))
+                          print('ETF source rejected:',label,str(exc)[:500],flush=True)
+                  raise RuntimeError('All independent ETF 510500 sources failed: '+repr(errors))
               return fallback_index(),fallback_etf()
-          
-          
+
+
           def read_bonds_latest():
               """Prefer refresh with AKShare at GitHub run; fallback to previously archived Github daily.
               Failed refresh does not invent 2026-10 observations.
@@ -345,7 +420,9 @@ jobs:
           def quality(fac,prices,idx,etf,fx,dol):
               d={'raw_bond_source':REPO+'china_us_yields_daily.csv',
                  'raw_fred_series':['DEXCHUS','DTWEXBGS'],
-                 'price_sources':['AKShare CSI500 index','AKShare ETF510500 hfq/qfq; Sina unadjusted fallback explicitly flagged'],
+                 'price_sources':[
+                  (ROOT/'csi500_source.txt').read_text(encoding='utf-8') if (ROOT/'csi500_source.txt').exists() else 'unknown',
+                  (ROOT/'etf_source.txt').read_text(encoding='utf-8') if (ROOT/'etf_source.txt').exists() else 'unknown'],
                  'monthly_models':'NOT modified',
                  'week_definition':'Week ending Friday (W-FRI); China last available yield, US yield average, FX mean, broad dollar mean',
                  'entry_convention':'First Chinese market open Thursday/Friday of target week; returns to following eligible week; holiday week may extend holding',
@@ -443,6 +520,14 @@ jobs:
           PY_WEEKLY_CODE
           python research/weekly_v1b/weekly_v1b.py --self-test
           python research/weekly_v1b/weekly_v1b.py
+      - name: Preserve diagnostics for unsuccessful runs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-v1b-failure-debug
+          path: research/weekly_v1b/
+          retention-days: 7
+          if-no-files-found: warn
       - name: Save original inputs, weekly features, backtest predictions and quality logs
         run: |
           git config user.name 'github-actions[bot]'
