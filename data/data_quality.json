@@ -1,0 +1,26 @@
+{
+  "CN_2Y_pct": {
+    "valid_months": 129,
+    "missing_months": []
+  },
+  "CN_5Y_pct": {
+    "valid_months": 129,
+    "missing_months": []
+  },
+  "CN_10Y_pct": {
+    "valid_months": 129,
+    "missing_months": []
+  },
+  "US_2Y_pct": {
+    "valid_months": 129,
+    "missing_months": []
+  },
+  "US_5Y_pct": {
+    "valid_months": 129,
+    "missing_months": []
+  },
+  "US_10Y_pct": {
+    "valid_months": 129,
+    "missing_months": []
+  }
+}
