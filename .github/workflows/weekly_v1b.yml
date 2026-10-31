@@ -47,7 +47,7 @@ jobs:
           import pandas as pd
           import requests
           import statsmodels.api as sm
-          
+
           REPO = 'https://raw.githubusercontent.com/zhesunstudentutseduau-afk/macro-open-data/main/data/'
           ROOT = Path('research/weekly_v1b')
           START='20160101'; END=pd.Timestamp.today().strftime('%Y%m%d')
@@ -55,8 +55,8 @@ jobs:
           START_EVAL='2021-03-05'
           MIN_TRAIN=130
           TRADE_COST=0.001    # 仿照此前月频研究的单次满额仓位切换成本：千分之一
-          
-          
+
+
           def download_csv(url, tries=3):
               last=None
               for i in range(tries):
@@ -71,8 +71,8 @@ jobs:
                       print('download attempt',i+1,'failed',url,str(exc)[:250],flush=True)
                       time.sleep(2*(i+1))
               raise RuntimeError(f'Download failed: {url}: {last}')
-          
-          
+
+
           def normalize_price(raw, tag):
               df=raw.copy(); df.columns=[str(c).strip() for c in df.columns]
               ren={'日期':'date','date':'date','开盘':'open','open':'open','收盘':'close','close':'close',
@@ -88,8 +88,8 @@ jobs:
               if len(df)<1000: raise ValueError(f'{tag} insufficient trading dates: {len(df)}')
               df.to_csv(ROOT / f'{tag}_daily.csv',index=False,encoding='utf-8-sig')
               return df
-          
-          
+
+
           def validate_market_coverage(data, tag):
               # Never silently use short/stale market data: that would distort the walk-forward sample.
               first, last = data.date.min(), data.date.max()
@@ -146,6 +146,64 @@ jobs:
               return result
 
 
+          # PRICE DATA SAFEGUARD: discovered after the first successful 2026-10-31 run.
+          # BaoStock adjustflag=1 ETF file had 2024-05-16 close=5.513 and next-day
+          # 2024-05-17 open=1.77431058 (-67.82%) with CSI500 index essentially flat.
+          # This is an adjustment discontinuity, not a real tradable loss. Never accept
+          # an ETF series only because it has 1000+ rows and a recent end date.
+          def validate_etf_tracking(index_df, etf_df, source):
+              d = index_df[['date','open']].merge(etf_df[['date','open']],on='date',how='inner',suffixes=('_idx','_etf')).sort_values('date')
+              if len(d) < 1000:raise ValueError(source+': fewer than 1000 shared index/ETF trading days')
+              d['ri']=d.open_idx.pct_change()
+              d['re']=d.open_etf.pct_change()
+              d['gap']=d.re-d.ri
+              spikes=d[d.gap.abs() > .08]
+              largest=d.iloc[d.gap.abs().fillna(0).argmax()]
+              stats={'source':source, 'n_overlap_days':len(d), 'largest_gap_date':str(largest.date.date()),
+                     'largest_gap_pct_points':round(float(largest.gap*100),4),
+                     'gap_over_3pp_count':int((d.gap.abs()>.03).sum()),
+                     'gap_over_8pp_count':int(len(spikes)),
+                     'method':'index and ETF open-to-open daily return difference; conservative absolute 8pp hard limit'}
+              print('ETF TRACKING AUDIT',stats,flush=True)
+              if len(spikes):
+                  s=spikes[['date','ri','re','gap']].head(8).to_string(index=False)
+                  raise ValueError(source+': ETF/index daily return divergence >8pp, reject untrusted adjusted history: '+s)
+              (ROOT/'etf_tracking_checks.json').write_text(json.dumps(stats,indent=2,ensure_ascii=False),encoding='utf8')
+              return etf_df
+
+
+          def adjust_raw_etf_corporate_actions(raw, source):
+              """Convert *unadjusted* traded opens into a reinvested-wealth price proxy.
+              Events verified as of 2026-10-31; new corporate actions require updating
+              the ledger and checking against the fund manager before future backtests.
+              This is not a historical executable price, only a dividend/split-aware proxy.
+              """
+              raw=raw.copy().sort_values('date')
+              # From official fund/event listing: split on 2022-08-26, applied at next
+              # session's OPEN 2022-08-29 (one old share becomes 1.1454 new shares).
+              # Cash dividend per share, applied at ex-dividend session's open.
+              events=[('2022-08-29','split',1.1454),
+                      ('2024-05-17','div',0.087),
+                      ('2025-01-16','div',0.091),
+                      ('2026-01-16','div',0.062),
+                      ('2026-07-15','div',0.149)]
+              factor=np.ones(len(raw),dtype=float)
+              for ds,kind,v in events:
+                  date=pd.Timestamp(ds)
+                  if date>raw.date.max():continue
+                  hits=raw.index[raw.date>=date]
+                  if len(hits)==0:continue
+                  idx=hits[0]
+                  price=float(raw.loc[idx,'open'])
+                  if price<=0:raise ValueError('invalid raw ETF open on '+ds)
+                  multiplier=v if kind=='split' else (1+v/price)
+                  factor[np.flatnonzero(raw.index==idx)[0]:]*=multiplier
+                  print('ETF CORPORATE ACTION',ds,kind,v,'multiplier',round(multiplier,8),source,flush=True)
+              raw['open']*=factor
+              raw['close']*=factor
+              return raw
+
+
           def read_market():
               import akshare as ak
 
@@ -177,29 +235,37 @@ jobs:
                           print('CSI500 source rejected:',label,str(exc)[:500],flush=True)
                   raise RuntimeError('All independent CSI500 index sources failed: '+repr(errors))
 
-              def fallback_etf():
+              def fallback_etf(index_df):
                   errors=[]
                   providers=[
-                      ('Eastmoney ETF hfq', lambda:ak.fund_etf_hist_em(symbol='510500',period='daily',start_date=START,end_date=END,adjust='hfq'), 'hfq'),
-                      ('Baostock ETF hfq',lambda:baostock_daily('sh.510500',adjustflag='1'),'hfq_baostock'),
-                      ('Eastmoney ETF qfq',lambda:ak.fund_etf_hist_em(symbol='510500',period='daily',start_date=START,end_date=END,adjust='qfq'),'qfq'),
-                      ('Sina ETF unadjusted',lambda:ak.fund_etf_hist_sina(symbol='sh510500'),'none: Sina unadjusted; distributions ignored'),
+                      ('Eastmoney ETF hfq', lambda:ak.fund_etf_hist_em(symbol='510500',period='daily',start_date=START,end_date=END,adjust='hfq'), 'hfq',False),
+                      ('Eastmoney ETF qfq',lambda:ak.fund_etf_hist_em(symbol='510500',period='daily',start_date=START,end_date=END,adjust='qfq'),'qfq',False),
+                      ('Baostock ETF RAW+verified actions',lambda:baostock_daily('sh.510500',adjustflag='3'),'raw+corporate-actions',True),
+                      ('Sina ETF RAW+verified actions',lambda:ak.fund_etf_hist_sina(symbol='sh510500'),'raw+corporate-actions',True),
                   ]
-                  for label,fn,adj in providers:
+                  for label,fn,adj,needs_action in providers:
                       try:
                           raw=fn()
                           print('ETF source candidate',label,'rows',len(raw),flush=True)
                           ret=validate_market_coverage(normalize_price(raw,'etf510500_adjusted'),'ETF '+label)
+                          if needs_action:
+                              ret=adjust_raw_etf_corporate_actions(ret,label)
+                          # Critical: reject implausible relative price jumps,
+                          # rather than silently treating 2024 adjustment bugs as P&L.
+                          ret=validate_etf_tracking(index_df,ret,label)
+                          ret.to_csv(ROOT/'etf510500_adjusted_daily.csv',index=False,encoding='utf-8-sig')
                           (ROOT/'etf_adjust_used.txt').write_text(adj,encoding='utf-8')
                           (ROOT/'etf_source.txt').write_text(label,encoding='utf-8')
-                          if adj.startswith('none'):
-                              print('QUALITY WARNING: unadjusted ETF prices omit cash distributions; results are price-only and require audit',flush=True)
+                          if needs_action:
+                              print('QUALITY NOTICE: corporate-action-adjusted open assumes dividend reinvestment at ex-date opening price',flush=True)
                           return ret
                       except Exception as exc:
-                          errors.append((label,str(exc)[:500]))
-                          print('ETF source rejected:',label,str(exc)[:500],flush=True)
-                  raise RuntimeError('All independent ETF 510500 sources failed: '+repr(errors))
-              return fallback_index(),fallback_etf()
+                          errors.append((label,str(exc)[:1200]))
+                          print('ETF source rejected:',label,str(exc)[:1200],flush=True)
+                  raise RuntimeError('All 510500 ETF feeds rejected by coverage/tracking tests; do not publish unreliable ETF P&L: '+repr(errors))
+              idx=fallback_index()
+              return idx,fallback_etf(idx)
+
 
 
           def read_bonds_latest():
@@ -230,8 +296,8 @@ jobs:
               print('Bond latest',latest.date(),'age_days',age,flush=True)
               if age>21:print('WARNING: bond data are stale: results will end early; do NOT claim current signals',flush=True)
               return b
-          
-          
+
+
           def read_fred(series):
               """H.10 daily Fed data: direct Board historical tables first, FRED CSV fallback.
               DEXCHUS = CNY per USD; DTWEXBGS = 2006-base nominal broad USD index.
@@ -308,15 +374,15 @@ jobs:
 
           def make_week(dates):
               return dates.dt.to_period('W-FRI').dt.end_time.dt.normalize()
-          
-          
+
+
           def aggregate_week_last(df, field, output, week_axis):
               d=df[['date',field]].copy().dropna(); d['week']=make_week(d.date)
               d=d[(d['date'].dt.weekday<5)&(d['date']>=pd.Timestamp('2016-01-01'))]
               # yields: last effective observation in week, not assuming Friday exists
               return d.groupby('week').tail(1).set_index('week')[field].rename(output).reindex(week_axis)
-          
-          
+
+
           def aggregate_week_mean(df,field,output,week_axis):
               d=df[['date',field]].copy().dropna();d['week']=make_week(d.date)
               d=d[(d.date.dt.weekday<5)&(d.date>=pd.Timestamp('2016-01-01'))]
@@ -324,8 +390,8 @@ jobs:
               s=d.groupby('week')[field].mean()
               # 2 observations minimum for full ordinary weeks; short holiday weeks remain missing to avoid invented values
               return s.where(count>=2).rename(output).reindex(week_axis)
-          
-          
+
+
           def build_features(bonds, fx, dollar):
               if '日期' not in bonds: raise ValueError('Bond daily schema changed')
               b=bonds.copy(); b['date']=pd.to_datetime(b['日期'],errors='coerce')
@@ -354,8 +420,8 @@ jobs:
               m.index.name='week_end'
               m.to_csv(ROOT/'weekly_macro_factors.csv',encoding='utf-8-sig')
               return m
-          
-          
+
+
           def pick_trade_anchor(prices, name):
               d=prices[['date','open']].copy();d['week_end']=make_week(d.date)
               # 周四或周五首个交易日，避免未公布的美国数据提前被使用
@@ -363,8 +429,8 @@ jobs:
               d=d.sort_values('date').groupby('week_end').head(1).set_index('week_end').sort_index()
               d.columns=['entry_date_'+name, 'entry_open_'+name]
               return d
-          
-          
+
+
           def price_weekly(index_df,etf_df,weeks):
               i=pick_trade_anchor(index_df,'index')
               e=pick_trade_anchor(etf_df,'etf')
@@ -390,13 +456,13 @@ jobs:
                   joined[f'holding_days_{name}']=days
               joined.to_csv(ROOT/'weekly_trade_anchors_and_returns.csv',encoding='utf-8-sig')
               return joined
-          
-          
+
+
           def make_regressors(m,name):
               factor=f'd_spread_{10 if name=="V1" else 5}Y'
               return np.column_stack([m[factor].to_numpy(float),m.fx_log_change.to_numpy(float),m.dollar_log_change.to_numpy(float)])
-          
-          
+
+
           def evaluate(week_axis, factors, prices, model, horizon, eval_start=START_EVAL):
               x=make_regressors(factors,model)
               y=prices.return_index.to_numpy(float)
@@ -430,8 +496,8 @@ jobs:
                   params.append(fit.params.copy())
                   prev_w=w
               return pd.DataFrame(records)
-          
-          
+
+
           def metrics(df):
               r=df.strategy_etf_pct.to_numpy(float)/100
               b=df.actual_etf_pct.to_numpy(float)/100
@@ -451,8 +517,8 @@ jobs:
                 'alpha_annual_pct':100*52*fit.params[0],'alpha_pvalue_HAC4':float(fit.pvalues[0]),
                 'beta_market':float(fit.params[1]),
                 'notes':'Exploratory results; mixed China/US conventions; open-to-open, ETF-adjustment and vintage cautions'}
-          
-          
+
+
           def last_model_predictions(weeks,fac,pr,model,h):
               x=make_regressors(fac,model);y=pr.return_index.to_numpy(float)
               ans=[]
@@ -475,8 +541,8 @@ jobs:
                       'status':'backfilled research signal; not historical registered forecast'})
                   break
               return ans
-          
-          
+
+
           def quality(fac,prices,idx,etf,fx,dol):
               d={'raw_bond_source':REPO+'china_us_yields_daily.csv',
                  'fed_h10_series':['DEXCHUS','DTWEXBGS'],
@@ -504,11 +570,12 @@ jobs:
                   'Missing holiday calendar week: position held across closure and evaluation interval longer than seven days',
                   'Annualized 52-weeks approximation ignores variable-week gaps']}
               d['etf_adjustment']=(ROOT/'etf_adjust_used.txt').read_text(encoding='utf-8') if (ROOT/'etf_adjust_used.txt').exists() else 'unknown'
+              d['etf_tracking_audit']=json.loads((ROOT/'etf_tracking_checks.json').read_text(encoding='utf-8')) if (ROOT/'etf_tracking_checks.json').exists() else 'NOT RUN'
               d['last_bond_date']=str(pd.to_datetime(pd.read_csv(ROOT/'bonds_daily_source.csv')['日期']).max().date()) if (ROOT/'bonds_daily_source.csv').exists() else 'missing'
               (ROOT/'data_quality.json').write_text(json.dumps(d,ensure_ascii=False,indent=2),encoding='utf-8')
               return d
-          
-          
+
+
           def self_test():
               # synthetic full numerical logic test, not real results
               np.random.seed(37)
@@ -538,9 +605,19 @@ jobs:
               a=original[original.week_end<'2024-01-01'].prediction_index_pct.to_numpy()
               b=changed[changed.week_end<'2024-01-01'].prediction_index_pct.to_numpy()
               assert np.array_equal(a,b), 'LOOKAHEAD ERROR: future labels changed past predictions'
-              print('SELFTEST_OK: 8 weekly synthetic model configurations; >100 predictions each; future-label anti-lookahead check passed; no real market P&L claimed')
-          
-          
+              # Stress test: synthetic market with one fake 2024 -67% ETF print.
+              testdays=pd.date_range('2020-01-02',periods=1330,freq='B')
+              testidx=pd.DataFrame({'date':testdays,'open':np.linspace(5400,5450,len(testdays))})
+              testetf=pd.DataFrame({'date':testdays,'open':np.linspace(5.4,5.45,len(testdays))})
+              testetf.loc[testetf.date>=pd.Timestamp('2024-05-17'),'open'] /= 3.0
+              try:
+                  validate_etf_tracking(testidx,testetf,'synthetic bad ETF')
+                  raise AssertionError('CORRUPTED ETF HISTORY ACCEPTED')
+              except ValueError as exc:
+                  assert 'divergence >8pp' in str(exc),str(exc)
+              print('SELFTEST_OK: eight model configurations, future labels, ETF discontinuity guard; no real P&L claimed')
+
+
           def main():
               ap=argparse.ArgumentParser();ap.add_argument('--self-test',action='store_true');args=ap.parse_args()
               if args.self_test:self_test();return
@@ -576,7 +653,7 @@ jobs:
               report+='''\n## 数据质量与限制\n\n- 原始数据来源与有效日期见 `data_quality.json`，全量逐周因子见 `weekly_macro_factors.csv`。\n- 严格区分真实指数、510500 ETF以及交易时点。ETF日度复权开盘价仅为历史代理价格，不是用户可保证成交的价格。\n- 美联储H.10的外汇与广义美元指数通常于美国星期一16:15公布上一周观测；美国节假日推迟。周四交易缓冲是假设，未逐次核对历史实际公布日志。\n- 国债收益率日度数据可能含周末记录；这份程序剔除非周一至周五的债券数据，并保留缺失值。\n- 以过去数据不断选取V1/B/horizon属于历史探索，多次比较的名义显著性不可当作独立证据。\n- 项目之前已建立的月频V1/B不会在本次执行中修改。\n'''
               (ROOT/'research_report.md').write_text(report,encoding='utf-8')
               print('OK: generated data and reports in',ROOT,flush=True)
-          
+
           if __name__=='__main__': main()
           PY_WEEKLY_CODE
           python research/weekly_v1b/weekly_v1b.py --self-test
