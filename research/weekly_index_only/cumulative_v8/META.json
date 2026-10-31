@@ -1,0 +1,24 @@
+{
+  "version": "v8-cumulative",
+  "python": "3.12.15",
+  "pandas": "2.3.3",
+  "numpy": "2.5.4",
+  "statsmodels": "0.15.0",
+  "inputs": [
+    {
+      "file": "weekly_macro_factors.csv",
+      "rows": 569,
+      "sha256": "8b9870ba50a4bba751f1ea38e1c8a7fa0cb9de45479806e11b4df07d115979c1"
+    },
+    {
+      "file": "csi500_index_daily.csv",
+      "rows": 2628,
+      "sha256": "96a864553a2e85fca161a380f6daf4b2a4f9cfda7f760649b00bc80cdf3c0978",
+      "known_nontrading_2016_01_01_records_removed": 1
+    }
+  ],
+  "model_count": 8,
+  "predictions_total": 9056,
+  "n_complete_historical": 8776,
+  "signal_friday_latest_complete": "2026-10-23"
+}

@@ -1,0 +1,9 @@
+﻿model,horizon_weeks,signal_week,target_week_ending,train_n,pred_cumulative_pct,naive_cumulative_pct,actual_cumulative_pct,has_realized_label,forecast_status
+V1,1,2026-10-23,2026-10-30,526,0.1059502379475938,-0.05258574075067822,-7.256314697341515,True,PRELIMINARY; feature publication vintages not independently audited
+V1,2,2026-10-23,2026-11-06,525,0.18120358813475443,-0.04895534311957495,,False,PRELIMINARY; feature publication vintages not independently audited
+V1,4,2026-10-23,2026-11-20,523,0.4648140859761668,0.49215674171919194,,False,PRELIMINARY; feature publication vintages not independently audited
+V1,8,2026-10-23,2026-12-18,520,0.7301336951049748,0.9423880403567123,,False,PRELIMINARY; feature publication vintages not independently audited
+B,1,2026-10-23,2026-10-30,526,0.06745464348629629,-0.05258574075067822,-7.256314697341515,True,PRELIMINARY; feature publication vintages not independently audited
+B,2,2026-10-23,2026-11-06,525,0.10311084197117115,-0.04895534311957495,,False,PRELIMINARY; feature publication vintages not independently audited
+B,4,2026-10-23,2026-11-20,523,0.38925601332792387,0.49215674171919194,,False,PRELIMINARY; feature publication vintages not independently audited
+B,8,2026-10-23,2026-12-18,520,0.8488863213197448,0.9423880403567123,,False,PRELIMINARY; feature publication vintages not independently audited
