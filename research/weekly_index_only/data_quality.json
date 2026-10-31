@@ -1,0 +1,45 @@
+{
+  "research_design": "CSI500 price index ONLY; no ETF data and no real-world tradable P&L",
+  "raw_bond_source": "https://raw.githubusercontent.com/zhesunstudentutseduau-afk/macro-open-data/main/data/china_us_yields_daily.csv",
+  "fed_h10_series": [
+    "DEXCHUS",
+    "DTWEXBGS"
+  ],
+  "fed_h10_sources": {
+    "DEXCHUS": "Federal Reserve Board H.10 historical daily HTML: https://www.federalreserve.gov/releases/h10/hist/dat00_ch.htm",
+    "DTWEXBGS": "Federal Reserve Board H.10 historical daily HTML: https://www.federalreserve.gov/releases/h10/summary/jrxwtfb_nb.htm"
+  },
+  "index_price_source": "CSI official index_zh_a_hist_csindex 000905",
+  "monthly_models": "NOT modified",
+  "week_definition": "Week ending Friday (W-FRI); China last available yield, US yield average, FX mean, broad dollar mean",
+  "entry_convention": "Index anchor: first Chinese market open Thursday or Friday of target week; next eligible week open as return endpoint; not executable index trading",
+  "data_release_assumption": "US H.10 publication delayed on US holidays; Thursday China reference point is a conservative heuristic, NOT point-in-time verified",
+  "tplus_h_convention": "factor week t -> index week t+h opening-to-next-week opening SINGLE-period return, NOT h-week compounded cumulative",
+  "n_weeks_macro_V1": 539,
+  "n_weeks_macro_B": 539,
+  "n_index_weekly_anchors": 535,
+  "n_complete_weekly_index_returns": 534,
+  "date_ranges": {
+    "idx": [
+      "2016-01-01",
+      "2026-10-30"
+    ],
+    "fx": [
+      "2016-01-01",
+      "2026-10-23"
+    ],
+    "dollar": [
+      "2016-01-01",
+      "2026-10-23"
+    ]
+  },
+  "warning": [
+    "CSI500 PRICE index (000905) is NOT a directly tradable asset and does not include dividends reinvested",
+    "Backtested strategy returns are theoretical index exposure only, NOT realizable fund returns",
+    "Hypothetical per-switch cost 0.1% is NOT established execution friction",
+    "Historical H.10 data may reflect later corrections; actual vintage not yet audited",
+    "Historical real-time release of all factor observations is not fully checked",
+    "Holiday-week gaps cause periods longer than 7 days; 52-week annualization approximates elapsed time"
+  ],
+  "last_bond_date": "2026-10-30"
+}

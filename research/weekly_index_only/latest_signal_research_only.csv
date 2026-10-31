@@ -1,0 +1,9 @@
+﻿asof_utc,model,horizon_weeks,signal_week,target_week_end,target_thursday_estimate,predicted_index_return_pct,suggested_weight,train_n,status
+2026-10-31T12:31:32.738366+00:00,V1,1,2026-10-23,2026-10-30,2026-10-29,0.2073229279379962,1,507,backfilled research signal; not historical registered forecast
+2026-10-31T12:31:32.854327+00:00,V1,2,2026-10-23,2026-11-06,2026-11-05,0.08117600275254602,1,506,backfilled research signal; not historical registered forecast
+2026-10-31T12:31:32.972041+00:00,V1,4,2026-10-23,2026-11-20,2026-11-19,-0.029332256470712432,0,504,backfilled research signal; not historical registered forecast
+2026-10-31T12:31:33.087836+00:00,V1,8,2026-10-23,,2026-12-17,0.19824577853462672,1,501,backfilled research signal; not historical registered forecast
+2026-10-31T12:31:33.209044+00:00,B,1,2026-10-23,2026-10-30,2026-10-29,0.10797190080323764,1,507,backfilled research signal; not historical registered forecast
+2026-10-31T12:31:33.324935+00:00,B,2,2026-10-23,2026-11-06,2026-11-05,0.04901837012400106,1,506,backfilled research signal; not historical registered forecast
+2026-10-31T12:31:33.439928+00:00,B,4,2026-10-23,2026-11-20,2026-11-19,0.10112537026124939,1,504,backfilled research signal; not historical registered forecast
+2026-10-31T12:31:33.555825+00:00,B,8,2026-10-23,,2026-12-17,0.1429349935421028,1,501,backfilled research signal; not historical registered forecast
