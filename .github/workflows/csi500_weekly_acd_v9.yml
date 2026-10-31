@@ -509,3 +509,4 @@ jobs:
             git push
           else
             echo 'No change to V9 A/C/D output files.'
+          fi
