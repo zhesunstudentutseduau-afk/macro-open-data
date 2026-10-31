@@ -1,0 +1,52 @@
+{
+  "raw_bond_source": "https://raw.githubusercontent.com/zhesunstudentutseduau-afk/macro-open-data/main/data/china_us_yields_daily.csv",
+  "fed_h10_series": [
+    "DEXCHUS",
+    "DTWEXBGS"
+  ],
+  "fed_h10_sources": {
+    "DEXCHUS": "Federal Reserve Board H.10 historical daily HTML: https://www.federalreserve.gov/releases/h10/hist/dat00_ch.htm",
+    "DTWEXBGS": "Federal Reserve Board H.10 historical daily HTML: https://www.federalreserve.gov/releases/h10/summary/jrxwtfb_nb.htm"
+  },
+  "price_sources": [
+    "CSI official index_zh_a_hist_csindex 000905",
+    "Baostock ETF hfq"
+  ],
+  "monthly_models": "NOT modified",
+  "week_definition": "Week ending Friday (W-FRI); China last available yield, US yield average, FX mean, broad dollar mean",
+  "entry_convention": "First Chinese market open Thursday/Friday of target week; returns to following eligible week; holiday week may extend holding",
+  "data_release_assumption": "H.10 prior-week FX/dollar data published US Monday 16:15ET, delayed on US holidays; Thursday China entry buffer",
+  "tplus_h_convention": "factor week t -> ETF week t+h open-to-next-week open single-period return (NOT h-week cumulative)",
+  "n_weeks_macro_any": 539,
+  "n_weeks_macro_B": 539,
+  "n_trade_anchors_etf": 535,
+  "n_complete_weekly_index_returns": 534,
+  "n_complete_weekly_etf_returns": 534,
+  "date_ranges": {
+    "idx": [
+      "2016-01-01",
+      "2026-10-30"
+    ],
+    "etf": [
+      "2016-01-04",
+      "2026-10-30"
+    ],
+    "fx": [
+      "2016-01-01",
+      "2026-10-23"
+    ],
+    "dollar": [
+      "2016-01-01",
+      "2026-10-23"
+    ]
+  },
+  "warning": [
+    "Historical H.10 data may reflect later corrections; actual vintage not yet audited",
+    "ETF adjusted open is wealth proxy, not actual opening execution price; ignores bid/ask and dividends at settlement",
+    "ETF 510500 price vs CSI 500 price-index different objects, check tracking/dividend distributions",
+    "Missing holiday calendar week: position held across closure and evaluation interval longer than seven days",
+    "Annualized 52-weeks approximation ignores variable-week gaps"
+  ],
+  "etf_adjustment": "hfq_baostock",
+  "last_bond_date": "2026-10-30"
+}

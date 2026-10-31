@@ -1,0 +1,551 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""中证500 V1/B 周频探索性回测。适用于 GitHub Actions，默认2016年起收集日度，2021年起样本外。
+V1=Δ[中国10Y每周最后有效值 - 美国10Y周均值]
+B=Δ[中国5Y每周最后有效值 - 美国5Y周均值]
+其他两因子：100·Δln(USD/CNY周均), 100·Δln(美国广义美元指数周均)
+信号：星期五结束的周w数据，一般在下周二（美国H10发布后）可见；为容纳节假日，星期四及之后交易。
+预测：周w的信号，预测周w+h的中证500指数ETF可交易周收益，即该周选定开盘价到下一可交易周开盘价。
+评估：以中证500指数该时段的开盘到开盘收益为OLS训练目标；ETF510500 hfq开盘收益为交易代理。
+严格训练：在评估信号周w时，仅训练目标周<=w-1的已经完结的收益。
+注意：历史H10修订、ETF复权、开盘成交价格、交易费用都需进一步审计。
+"""
+import argparse
+from io import StringIO
+from pathlib import Path
+import json, time, sys, os, traceback
+import numpy as np
+import pandas as pd
+import requests
+import statsmodels.api as sm
+
+REPO = 'https://raw.githubusercontent.com/zhesunstudentutseduau-afk/macro-open-data/main/data/'
+ROOT = Path('research/weekly_v1b')
+START='20160101'; END=pd.Timestamp.today().strftime('%Y%m%d')
+HORIZONS=[1,2,4,8]
+START_EVAL='2021-03-05'
+MIN_TRAIN=130
+TRADE_COST=0.001    # 仿照此前月频研究的单次满额仓位切换成本：千分之一
+
+
+def download_csv(url, tries=3):
+    last=None
+    for i in range(tries):
+        try:
+            r=requests.get(url,timeout=45,headers={'User-Agent':'Mozilla/5.0 (research weekly macro index)'});
+            r.raise_for_status()
+            df=pd.read_csv(StringIO(r.content.decode('utf-8-sig')))
+            if len(df)<80: raise RuntimeError(f'Data too short: {url}, {len(df)} rows')
+            return df
+        except Exception as exc:
+            last=exc
+            print('download attempt',i+1,'failed',url,str(exc)[:250],flush=True)
+            time.sleep(2*(i+1))
+    raise RuntimeError(f'Download failed: {url}: {last}')
+
+
+def normalize_price(raw, tag):
+    df=raw.copy(); df.columns=[str(c).strip() for c in df.columns]
+    ren={'日期':'date','date':'date','开盘':'open','open':'open','收盘':'close','close':'close',
+         '成交量':'volume','volume':'volume'}
+    df=df.rename(columns={k:v for k,v in ren.items() if k in df.columns})
+    for c in ['date','open','close']:
+        if c not in df: raise ValueError(f'{tag}: missing {c}: {list(df.columns)}')
+    df['date']=pd.to_datetime(df['date'],errors='coerce')
+    for c in ['open','close']:
+        df[c]=pd.to_numeric(df[c],errors='coerce')
+    df=df[['date','open','close']].dropna().sort_values('date').drop_duplicates('date',keep='last')
+    df=df[(df.date.dt.weekday<5)&(df.open>0)&(df.close>0)]
+    if len(df)<1000: raise ValueError(f'{tag} insufficient trading dates: {len(df)}')
+    df.to_csv(ROOT / f'{tag}_daily.csv',index=False,encoding='utf-8-sig')
+    return df
+
+
+def validate_market_coverage(data, tag):
+    # Never silently use short/stale market data: that would distort the walk-forward sample.
+    first, last = data.date.min(), data.date.max()
+    if first > pd.Timestamp('2017-01-01'):
+        raise ValueError(f'{tag} starts too late for 2016 baseline: {first.date()}')
+    if last < pd.Timestamp.today().normalize() - pd.Timedelta(days=21):
+        raise ValueError(f'{tag} stale: last date {last.date()}')
+    print(tag, 'COVERAGE_OK', str(first.date()), str(last.date()), 'n=', len(data), flush=True)
+    return data
+
+
+def _baostock_worker(code, adjustflag, output):
+    """Child process: BaoStock has had reports of unbounded TCP reads."""
+    import baostock as bs
+    import socket
+    socket.setdefaulttimeout(25)
+    try:
+        print('BAOSTOCK child connecting',code,flush=True)
+        lg=bs.login()
+        if lg.error_code!='0':
+            raise RuntimeError(f'Login failed: {lg.error_code} {lg.error_msg}')
+        try:
+            q=bs.query_history_k_data_plus(code,'date,open,close',
+                start_date='2016-01-01',end_date=pd.Timestamp.today().strftime('%Y-%m-%d'),
+                frequency='d',adjustflag=adjustflag)
+            if q.error_code!='0':
+                raise RuntimeError(f'Query error: {q.error_code} {q.error_msg}')
+            rows=[]
+            while q.next():rows.append(q.get_row_data())
+            pd.DataFrame(rows,columns=q.fields).to_csv(output,index=False)
+            print('BAOSTOCK child complete',code,len(rows),flush=True)
+        finally:bs.logout()
+    except Exception as exc:
+        Path(output+'.error').write_text(repr(exc),encoding='utf-8')
+        raise
+
+
+def baostock_daily(code,adjustflag='3'):
+    import multiprocessing as mp
+    # Terminate a stuck provider process instead of hanging the entire weekly job.
+    target=ROOT/('baostock_'+code.replace('.','_')+'_'+adjustflag+'.tmp.csv')
+    ctx=mp.get_context('fork')  # GitHub-hosted runner is ubuntu-latest
+    proc=ctx.Process(target=_baostock_worker,args=(code,adjustflag,str(target)))
+    proc.start();proc.join(timeout=75)
+    if proc.is_alive():
+        proc.terminate();proc.join(timeout=5)
+        raise RuntimeError(f'Baostock timeout after 75s: {code}')
+    if proc.exitcode!=0 or not target.exists():
+        err=Path(str(target)+'.error')
+        raise RuntimeError(f'Baostock failed: {code}, exit={proc.exitcode}, details=' +
+            (err.read_text(encoding='utf-8') if err.exists() else 'no details'))
+    result=pd.read_csv(target)
+    target.unlink(missing_ok=True)
+    return result
+
+
+def read_market():
+    import akshare as ak
+
+    # We must use CSI500 PRICE index (000905), not total-return index or CSI300.
+    # Two legacy Eastmoney APIs failed on the initial 2026-10-31 Actions run.
+    # Fallbacks query independent providers; all must pass the same quality checks.
+    def fallback_index():
+        errors=[]
+        providers=[
+            ('CSI official index_zh_a_hist_csindex 000905',
+             lambda:ak.stock_zh_index_hist_csindex(symbol='000905',start_date=START,end_date=END)),
+            ('Sina stock_zh_index_daily sh000905',
+             lambda:ak.stock_zh_index_daily(symbol='sh000905')),
+            ('baostock sh.000905',lambda:baostock_daily('sh.000905')),
+            ('Eastmoney stock_zh_index_daily_em csi000905',
+             lambda:ak.stock_zh_index_daily_em(symbol='csi000905',start_date=START,end_date=END)),
+            ('Eastmoney index_zh_a_hist 000905',
+             lambda:ak.index_zh_a_hist(symbol='000905',period='daily',start_date=START,end_date=END)),
+        ]
+        for label,fn in providers:
+            try:
+                raw=fn()
+                print('CSI500 source candidate',label,'rows',len(raw),flush=True)
+                ret=validate_market_coverage(normalize_price(raw,'csi500_index'), 'CSI500 '+label)
+                (ROOT/'csi500_source.txt').write_text(label,encoding='utf-8')
+                return ret
+            except Exception as exc:
+                errors.append((label,str(exc)[:500]))
+                print('CSI500 source rejected:',label,str(exc)[:500],flush=True)
+        raise RuntimeError('All independent CSI500 index sources failed: '+repr(errors))
+
+    def fallback_etf():
+        errors=[]
+        providers=[
+            ('Eastmoney ETF hfq', lambda:ak.fund_etf_hist_em(symbol='510500',period='daily',start_date=START,end_date=END,adjust='hfq'), 'hfq'),
+            ('Baostock ETF hfq',lambda:baostock_daily('sh.510500',adjustflag='1'),'hfq_baostock'),
+            ('Eastmoney ETF qfq',lambda:ak.fund_etf_hist_em(symbol='510500',period='daily',start_date=START,end_date=END,adjust='qfq'),'qfq'),
+            ('Sina ETF unadjusted',lambda:ak.fund_etf_hist_sina(symbol='sh510500'),'none: Sina unadjusted; distributions ignored'),
+        ]
+        for label,fn,adj in providers:
+            try:
+                raw=fn()
+                print('ETF source candidate',label,'rows',len(raw),flush=True)
+                ret=validate_market_coverage(normalize_price(raw,'etf510500_adjusted'),'ETF '+label)
+                (ROOT/'etf_adjust_used.txt').write_text(adj,encoding='utf-8')
+                (ROOT/'etf_source.txt').write_text(label,encoding='utf-8')
+                if adj.startswith('none'):
+                    print('QUALITY WARNING: unadjusted ETF prices omit cash distributions; results are price-only and require audit',flush=True)
+                return ret
+            except Exception as exc:
+                errors.append((label,str(exc)[:500]))
+                print('ETF source rejected:',label,str(exc)[:500],flush=True)
+        raise RuntimeError('All independent ETF 510500 sources failed: '+repr(errors))
+    return fallback_index(),fallback_etf()
+
+
+def read_bonds_latest():
+    """Prefer refresh with AKShare at GitHub run; fallback to previously archived Github daily.
+    Failed refresh does not invent 2026-10 observations.
+    """
+    import akshare as ak
+    cols={'中国国债收益率2年':'CN_2Y_pct', '中国国债收益率5年':'CN_5Y_pct',
+          '中国国债收益率10年':'CN_10Y_pct', '美国国债收益率2年':'US_2Y_pct',
+          '美国国债收益率5年':'US_5Y_pct', '美国国债收益率10年':'US_10Y_pct'}
+    try:
+        raw=ak.bond_zh_us_rate(start_date=START)
+        if not set(cols).union({'日期'}).issubset(raw.columns):
+            raise ValueError('Bond AKShare schema change: '+str(raw.columns.tolist()))
+        b=raw[['日期',*cols]].rename(columns=cols).copy()
+        b['日期']=pd.to_datetime(b['日期'],errors='coerce')
+        for col in cols.values():b[col]=pd.to_numeric(b[col],errors='coerce')
+        b=b.dropna(subset=['日期']).sort_values('日期').drop_duplicates('日期',keep='last')
+        if len(b)<1800:raise ValueError('Bond daily refresh too short')
+        b['日期']=b['日期'].dt.strftime('%Y-%m-%d')
+        print('Live bond refresh succeeded through',b['日期'].max(),flush=True)
+    except Exception as err:
+        print('WARNING: live bond refresh failed, fallback to existing public Github CSV',err,flush=True)
+        b=download_csv(REPO+'china_us_yields_daily.csv')
+    b.to_csv(ROOT/'bonds_daily_source.csv',index=False,encoding='utf-8-sig')
+    latest=pd.to_datetime(b['日期'],errors='coerce').max()
+    age=(pd.Timestamp.today().normalize()-latest.normalize()).days
+    print('Bond latest',latest.date(),'age_days',age,flush=True)
+    if age>21:print('WARNING: bond data are stale: results will end early; do NOT claim current signals',flush=True)
+    return b
+
+
+def read_fred(series):
+    """H.10 daily Fed data: direct Board historical tables first, FRED CSV fallback.
+    DEXCHUS = CNY per USD; DTWEXBGS = 2006-base nominal broad USD index.
+    No proxy substitutions, missing-value interpolation or silent stale data.
+    """
+    from bs4 import BeautifulSoup
+    import re
+    fed_pages={
+        'DEXCHUS':'https://www.federalreserve.gov/releases/h10/hist/dat00_ch.htm',
+        'DTWEXBGS':'https://www.federalreserve.gov/releases/h10/summary/jrxwtfb_nb.htm',
+    }
+    if series not in fed_pages:raise ValueError('Unrecognized Fed H10 series '+series)
+
+    def normalize(raw):
+        if not {'date',series}.issubset(raw.columns):
+            raise ValueError(series+' missing required date/value fields '+str(raw.columns.tolist()))
+        res=raw[['date',series]].copy()
+        res['date']=pd.to_datetime(res['date'],errors='coerce')
+        res[series]=pd.to_numeric(res[series],errors='coerce')
+        res=res.dropna(subset=['date']).drop_duplicates('date',keep='last').sort_values('date')
+        res=res[res.date>=pd.Timestamp('2016-01-01')]
+        valid=res.dropna(subset=[series])
+        if len(valid)<1600:raise RuntimeError(f'{series}: too few valid daily rows: {len(valid)}')
+        if valid.date.min()>pd.Timestamp('2017-01-01'):
+            raise RuntimeError(f'{series}: first available date too late {valid.date.min()}')
+        last=valid.date.max()
+        age=(pd.Timestamp.today().normalize()-last).days
+        if age>35:raise RuntimeError(f'{series}: stale last non-missing observation: {last.date()} age {age}d')
+        if series=='DEXCHUS' and not valid[series].between(3,12).all():
+            raise RuntimeError('CNY per USD outside broad sanity range, check units')
+        if series=='DTWEXBGS' and not valid[series].between(50,250).all():
+            raise RuntimeError('Broad USD index outside broad sanity range, check units')
+        return res
+
+    errors=[]
+    # The original FRED fredgraph.csv timed out in GitHub Actions #2.
+    # Use the Federal Reserve Board's publicly displayed original H.10 daily history.
+    try:
+        url=fed_pages[series]
+        r=requests.get(url,timeout=(12,40),headers={'User-Agent':'Mozilla/5.0 (academic macro data research)'})
+        r.raise_for_status()
+        soup=BeautifulSoup(r.text,'html.parser')
+        rows=[]
+        for tr in soup.find_all('tr'):
+            cells=[c.get_text(' ',strip=True) for c in tr.find_all(['td','th'],recursive=False)]
+            if len(cells)>=2 and re.fullmatch(r'\d{1,2}-[A-Za-z]{3}-\d{2}',cells[0]):
+                rows.append((cells[0],cells[1]))
+        if len(rows)<1600:raise RuntimeError(f'Fed H10 history parser found only {len(rows)} rows')
+        # Fixed format prevents an ambiguous day/month interpretation.
+        tmp=pd.DataFrame(rows,columns=['raw_date',series])
+        tmp['date']=pd.to_datetime(tmp.pop('raw_date'),format='%d-%b-%y',errors='coerce')
+        out=normalize(tmp)
+        source='Federal Reserve Board H.10 historical daily HTML: '+url
+    except Exception as exc:
+        errors.append(('Federal Reserve Board H.10',str(exc)[:300]))
+        print('WARN: Fed Board H.10 unavailable, trying original FRED CSV',series,str(exc)[:300],flush=True)
+        try:
+            u=f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}&cosd=2016-01-01'
+            df=download_csv(u,tries=1)
+            vcol=series if series in df else df.columns[-1]
+            dcol='observation_date' if 'observation_date' in df else df.columns[0]
+            out=normalize(pd.DataFrame({'date':df[dcol],series:df[vcol]}))
+            source='FRED original fredgraph.csv: '+u
+        except Exception as exc2:
+            errors.append(('FRED CSV',str(exc2)[:300]))
+            raise RuntimeError(f'H10 daily data unavailable for {series}: '+repr(errors)) from exc2
+    out.to_csv(ROOT/f'{series}_fred_daily.csv',index=False,encoding='utf-8-sig')
+    (ROOT/f'{series}_source.txt').write_text(source,encoding='utf-8')
+    print('H10_SERIES_OK',series,'source=',source,
+          'valid_n=',out[series].notna().sum(),
+          'first=',out.date.min().date(),'last=',out.loc[out[series].notna(),'date'].max().date(),flush=True)
+    return out
+
+
+def make_week(dates):
+    return dates.dt.to_period('W-FRI').dt.end_time.dt.normalize()
+
+
+def aggregate_week_last(df, field, output, week_axis):
+    d=df[['date',field]].copy().dropna(); d['week']=make_week(d.date)
+    d=d[(d['date'].dt.weekday<5)&(d['date']>=pd.Timestamp('2016-01-01'))]
+    # yields: last effective observation in week, not assuming Friday exists
+    return d.groupby('week').tail(1).set_index('week')[field].rename(output).reindex(week_axis)
+
+
+def aggregate_week_mean(df,field,output,week_axis):
+    d=df[['date',field]].copy().dropna();d['week']=make_week(d.date)
+    d=d[(d.date.dt.weekday<5)&(d.date>=pd.Timestamp('2016-01-01'))]
+    count=d.groupby('week')[field].count()
+    s=d.groupby('week')[field].mean()
+    # 2 observations minimum for full ordinary weeks; short holiday weeks remain missing to avoid invented values
+    return s.where(count>=2).rename(output).reindex(week_axis)
+
+
+def build_features(bonds, fx, dollar):
+    if '日期' not in bonds: raise ValueError('Bond daily schema changed')
+    b=bonds.copy(); b['date']=pd.to_datetime(b['日期'],errors='coerce')
+    req=['中国国债收益率5年','中国国债收益率10年','美国国债收益率5年','美国国债收益率10年']
+    # Github保存的CSV已经是英文规范化字段
+    mapping={
+        'CN_5Y_pct':'CN_5Y_pct','CN_10Y_pct':'CN_10Y_pct',
+        'US_5Y_pct':'US_5Y_pct','US_10Y_pct':'US_10Y_pct',
+    }
+    missing=[c for c in mapping if c not in b]
+    if missing:raise ValueError('GitHub daily bond column changed:'+str(missing))
+    for c in mapping:b[c]=pd.to_numeric(b[c],errors='coerce')
+    weeks=pd.date_range('2016-01-08',pd.Timestamp.today()+pd.Timedelta(days=30),freq='W-FRI')
+    m=pd.DataFrame(index=weeks)
+    for maturity in (5,10):
+        m[f'CN_{maturity}Y_last']=aggregate_week_last(b,f'CN_{maturity}Y_pct',f'CN_{maturity}Y_last',weeks)
+        m[f'US_{maturity}Y_avg']=aggregate_week_mean(b,f'US_{maturity}Y_pct',f'US_{maturity}Y_avg',weeks)
+    m['CNY_avg']=aggregate_week_mean(fx,'DEXCHUS','CNY_avg',weeks)
+    m['Dollar_avg']=aggregate_week_mean(dollar,'DTWEXBGS','Dollar_avg',weeks)
+    for maturity in (5,10):
+        m[f'bond_spread_{maturity}Y']=m[f'CN_{maturity}Y_last']-m[f'US_{maturity}Y_avg']
+        m[f'd_spread_{maturity}Y']=m[f'bond_spread_{maturity}Y'].diff()
+    m['fx_log_change']=100*np.log(m.CNY_avg).diff()
+    m['dollar_log_change']=100*np.log(m.Dollar_avg).diff()
+    # 删除不完整的宏观周但不向前填值，不删除时间轴
+    m.index.name='week_end'
+    m.to_csv(ROOT/'weekly_macro_factors.csv',encoding='utf-8-sig')
+    return m
+
+
+def pick_trade_anchor(prices, name):
+    d=prices[['date','open']].copy();d['week_end']=make_week(d.date)
+    # 周四或周五首个交易日，避免未公布的美国数据提前被使用
+    d=d[d.date.dt.weekday>=3]
+    d=d.sort_values('date').groupby('week_end').head(1).set_index('week_end').sort_index()
+    d.columns=['entry_date_'+name, 'entry_open_'+name]
+    return d
+
+
+def price_weekly(index_df,etf_df,weeks):
+    i=pick_trade_anchor(index_df,'index')
+    e=pick_trade_anchor(etf_df,'etf')
+    # 同一个中国交易周，市场开市日应相同。显式校验，避免错位
+    joined=i.join(e,how='outer').reindex(weeks)
+    joined.index.name='week_end'
+    matched=(joined['entry_date_index'].notna()&joined['entry_date_etf'].notna())
+    bad=joined.loc[matched&(joined.entry_date_index!=joined.entry_date_etf)]
+    if len(bad)>0: raise RuntimeError('Index and ETF trade dates disagree: '+bad.head(8).to_string())
+    for name in ['index','etf']:
+        p=joined[f'entry_open_{name}']
+        nextp=p.bfill().shift(-1) if False else None
+        # 取该周之后最近一个可交易周开盘；春节等整周休市时实际持仓保持到下一个交易周
+        vals=[];days=[]
+        valid=p.dropna()
+        for w in joined.index:
+            if pd.isna(p.loc[w]):vals.append(np.nan);days.append(np.nan);continue
+            following=valid[valid.index>w]
+            if len(following)==0: vals.append(np.nan);days.append(np.nan);continue
+            vals.append(following.iloc[0]/p.loc[w]-1)
+            days.append((following.index[0]-w).days)
+        joined[f'return_{name}']=vals
+        joined[f'holding_days_{name}']=days
+    joined.to_csv(ROOT/'weekly_trade_anchors_and_returns.csv',encoding='utf-8-sig')
+    return joined
+
+
+def make_regressors(m,name):
+    factor=f'd_spread_{10 if name=="V1" else 5}Y'
+    return np.column_stack([m[factor].to_numpy(float),m.fx_log_change.to_numpy(float),m.dollar_log_change.to_numpy(float)])
+
+
+def evaluate(week_axis, factors, prices, model, horizon, eval_start=START_EVAL):
+    x=make_regressors(factors,model)
+    y=prices.return_index.to_numpy(float)
+    r_etf=prices.return_etf.to_numpy(float)
+    weeks=list(week_axis)
+    records=[];params=[]
+    prev_w=0
+    for k in range(len(weeks)):
+        if weeks[k]<pd.Timestamp(eval_start):continue
+        t=k-horizon
+        if t<1 or not np.isfinite(x[t]).all(): continue
+        if not np.isfinite(y[k]) or not np.isfinite(r_etf[k]):continue
+        if pd.isna(prices.iloc[k]['entry_date_etf']):continue
+        # strict: at signal week t, target label j+h must be <=t-1
+        eligible=np.arange(1,max(1,t-horizon),dtype=int)
+        eligible=eligible[(eligible+horizon<len(y))]
+        eligible=eligible[np.isfinite(x[eligible]).all(axis=1)&np.isfinite(y[eligible+horizon])]
+        if len(eligible)<MIN_TRAIN:continue
+        fit=sm.OLS(y[eligible+horizon],sm.add_constant(x[eligible],has_constant='add')).fit()
+        pred=float(fit.predict(np.r_[1,x[t]].reshape(1,-1))[0])
+        w=int(pred>0)
+        cost=TRADE_COST*abs(w-prev_w)
+        sr=w*r_etf[k]-cost
+        records.append({'model':model,'horizon_weeks':horizon,'week_end':str(weeks[k].date()),
+            'signal_week':str(weeks[t].date()),'trade_date':str(prices.iloc[k]['entry_date_etf'].date()),
+            'train_n':len(eligible),'prediction_index_pct':100*pred,'actual_index_pct':100*y[k],
+            'actual_etf_pct':100*r_etf[k],'weight':w,'switch_cost_pct':cost*100,'strategy_etf_pct':sr*100,
+            'holding_calendar_days':prices.iloc[k]['holding_days_etf'],'beta_spread':fit.params[1],
+            'beta_fx':fit.params[2],'beta_dollar':fit.params[3],'beta_intercept':fit.params[0],
+            'train_r2':fit.rsquared})
+        params.append(fit.params.copy())
+        prev_w=w
+    return pd.DataFrame(records)
+
+
+def metrics(df):
+    r=df.strategy_etf_pct.to_numpy(float)/100
+    b=df.actual_etf_pct.to_numpy(float)/100
+    accuracy=float(np.mean((df.prediction_index_pct.to_numpy(float)>0)==(df.actual_index_pct.to_numpy(float)>0)))
+    nav=np.cumprod(1+r);bn=np.cumprod(1+b)
+    # 指数与ETF底层时点一致，但基准ETF高频调整后价格不是可成交现货
+    dd=float((nav/np.maximum.accumulate(np.r_[1.,nav])[1:]-1).min())
+    fit=sm.OLS(r,sm.add_constant(b)).fit(cov_type='HAC',cov_kwds={'maxlags':4})
+    return {'model':df.model.iloc[0],'horizon_weeks':int(df.horizon_weeks.iloc[0]),
+      'first_trade':df.week_end.iloc[0],'last_trade':df.week_end.iloc[-1],
+      'n':len(df),'train_min':int(df.train_n.min()),'train_max':int(df.train_n.max()),
+      'strategy_total_pct':100*(nav[-1]-1),'etf_buyhold_pct':100*(bn[-1]-1),
+      'annualized_return_pct':100*((nav[-1]**(52/len(r)))-1),
+      'annualized_volatility_pct':100*np.std(r,ddof=1)*np.sqrt(52),
+      'max_drawdown_pct':100*dd,'accuracy_pct':100*accuracy,
+      'stock_exposure_pct':100*df.weight.mean(),'n_switches':int((df.switch_cost_pct>0).sum()),
+      'alpha_annual_pct':100*52*fit.params[0],'alpha_pvalue_HAC4':float(fit.pvalues[0]),
+      'beta_market':float(fit.params[1]),
+      'notes':'Exploratory results; mixed China/US conventions; open-to-open, ETF-adjustment and vintage cautions'}
+
+
+def last_model_predictions(weeks,fac,pr,model,h):
+    x=make_regressors(fac,model);y=pr.return_index.to_numpy(float)
+    ans=[]
+    for t in range(len(weeks)-1,-1,-1):
+        if not np.isfinite(x[t]).all():continue
+        # Avoid signals based on a Friday whose Fed H10 index is not released yet.
+        # End of week Fri, Fed H10 releases Mon/Tue Eastern, conservatively only after the next Thursday in China.
+        if pd.Timestamp.today().normalize() < weeks[t] + pd.Timedelta(days=6):continue
+        k=t+h
+        candidates=np.arange(1,max(1,t-h),dtype=int)
+        candidates=candidates[(candidates+h<len(y))]
+        candidates=candidates[np.isfinite(x[candidates]).all(axis=1)&np.isfinite(y[candidates+h])]
+        if len(candidates)<MIN_TRAIN:continue
+        fit=sm.OLS(y[candidates+h],sm.add_constant(x[candidates],has_constant='add')).fit()
+        pred=float(fit.predict(np.r_[1,x[t]].reshape(1,-1))[0])
+        ans.append({'asof_utc':pd.Timestamp.now(tz='UTC').isoformat(),'model':model,'horizon_weeks':h,
+            'signal_week':str(weeks[t].date()),'target_week_end':str(weeks[k].date()) if k<len(weeks) else '',
+            'target_thursday_estimate':str((weeks[t]+pd.Timedelta(days=7*h-1)).date()),
+            'predicted_index_return_pct':100*pred,'suggested_weight':int(pred>0),'train_n':len(candidates),
+            'status':'backfilled research signal; not historical registered forecast'})
+        break
+    return ans
+
+
+def quality(fac,prices,idx,etf,fx,dol):
+    d={'raw_bond_source':REPO+'china_us_yields_daily.csv',
+       'fed_h10_series':['DEXCHUS','DTWEXBGS'],
+       'fed_h10_sources':{k:(ROOT/f'{k}_source.txt').read_text(encoding='utf-8') if (ROOT/f'{k}_source.txt').exists() else 'unknown' for k in ['DEXCHUS','DTWEXBGS']},
+       'price_sources':[
+        (ROOT/'csi500_source.txt').read_text(encoding='utf-8') if (ROOT/'csi500_source.txt').exists() else 'unknown',
+        (ROOT/'etf_source.txt').read_text(encoding='utf-8') if (ROOT/'etf_source.txt').exists() else 'unknown'],
+       'monthly_models':'NOT modified',
+       'week_definition':'Week ending Friday (W-FRI); China last available yield, US yield average, FX mean, broad dollar mean',
+       'entry_convention':'First Chinese market open Thursday/Friday of target week; returns to following eligible week; holiday week may extend holding',
+       'data_release_assumption':'H.10 prior-week FX/dollar data published US Monday 16:15ET, delayed on US holidays; Thursday China entry buffer',
+       'tplus_h_convention':'factor week t -> ETF week t+h open-to-next-week open single-period return (NOT h-week cumulative)',
+       'n_weeks_macro_any':int(fac[['d_spread_10Y','fx_log_change','dollar_log_change']].notna().all(axis=1).sum()),
+       'n_weeks_macro_B':int(fac[['d_spread_5Y','fx_log_change','dollar_log_change']].notna().all(axis=1).sum()),
+       'n_trade_anchors_etf':int(prices.entry_open_etf.notna().sum()),
+       'n_complete_weekly_index_returns':int(prices.return_index.notna().sum()),
+       'n_complete_weekly_etf_returns':int(prices.return_etf.notna().sum()),
+       'date_ranges':{'idx':[str(idx.date.min().date()),str(idx.date.max().date())],
+        'etf':[str(etf.date.min().date()),str(etf.date.max().date())],
+        'fx':[str(fx.date.min().date()),str(fx.date.max().date())],
+        'dollar':[str(dol.date.min().date()),str(dol.date.max().date())]},
+       'warning':['Historical H.10 data may reflect later corrections; actual vintage not yet audited',
+        'ETF adjusted open is wealth proxy, not actual opening execution price; ignores bid/ask and dividends at settlement',
+        'ETF 510500 price vs CSI 500 price-index different objects, check tracking/dividend distributions',
+        'Missing holiday calendar week: position held across closure and evaluation interval longer than seven days',
+        'Annualized 52-weeks approximation ignores variable-week gaps']}
+    d['etf_adjustment']=(ROOT/'etf_adjust_used.txt').read_text(encoding='utf-8') if (ROOT/'etf_adjust_used.txt').exists() else 'unknown'
+    d['last_bond_date']=str(pd.to_datetime(pd.read_csv(ROOT/'bonds_daily_source.csv')['日期']).max().date()) if (ROOT/'bonds_daily_source.csv').exists() else 'missing'
+    (ROOT/'data_quality.json').write_text(json.dumps(d,ensure_ascii=False,indent=2),encoding='utf-8')
+    return d
+
+
+def self_test():
+    # synthetic full numerical logic test, not real results
+    np.random.seed(37)
+    idx=pd.date_range('2016-01-08',periods=570,freq='W-FRI')
+    fac=pd.DataFrame(index=idx)
+    for v in ['d_spread_10Y','d_spread_5Y','fx_log_change','dollar_log_change']:
+        fac[v]=np.random.normal(0,.3,len(idx))
+    pr=pd.DataFrame(index=idx)
+    pr['entry_date_index']=idx-pd.Timedelta(days=1)
+    pr['entry_date_etf']=idx-pd.Timedelta(days=1)
+    pr['holding_days_etf']=7
+    pr['return_index']=.01*fac['d_spread_10Y'].shift(1)+.002*np.random.randn(len(idx))
+    pr['return_etf']=pr.return_index+.0001*np.random.randn(len(idx))
+    for h in HORIZONS:
+        for name in ['V1','B']:
+            r=evaluate(idx,fac,pr,name,h)
+            assert len(r)>100,(name,h,len(r))
+            assert r.train_n.min()>=MIN_TRAIN
+            assert r[['prediction_index_pct','strategy_etf_pct']].notna().all().all()
+            assert ((r.week_end.astype('datetime64[ns]')-r.signal_week.astype('datetime64[ns]')).dt.days==7*h).all()
+            _=metrics(r)
+    # Anti-lookahead: changing future labels must NOT change earlier signals.
+    original=evaluate(idx,fac,pr,'V1',2)
+    corrupted=pr.copy()
+    corrupted.loc[corrupted.index>=pd.Timestamp('2025-01-01'),'return_index'] += .6
+    changed=evaluate(idx,fac,corrupted,'V1',2)
+    a=original[original.week_end<'2024-01-01'].prediction_index_pct.to_numpy()
+    b=changed[changed.week_end<'2024-01-01'].prediction_index_pct.to_numpy()
+    assert np.array_equal(a,b), 'LOOKAHEAD ERROR: future labels changed past predictions'
+    print('SELFTEST_OK: 8 weekly synthetic model configurations; >100 predictions each; future-label anti-lookahead check passed; no real market P&L claimed')
+
+
+def main():
+    ap=argparse.ArgumentParser();ap.add_argument('--self-test',action='store_true');args=ap.parse_args()
+    if args.self_test:self_test();return
+    ROOT.mkdir(parents=True,exist_ok=True)
+    print('Step 1: download actual public market history',flush=True)
+    bonds=read_bonds_latest()
+    idx,etf=read_market()
+    fx=read_fred('DEXCHUS');dol=read_fred('DTWEXBGS')
+    fac=build_features(bonds,fx,dol)
+    trades=price_weekly(idx,etf,fac.index)
+    dq=quality(fac,trades,idx,etf,fx,dol)
+    print('Data quality:',json.dumps(dq['date_ranges'],ensure_ascii=False),flush=True)
+    print('Step 2: fit weekly expand-window regressions (2021+)',flush=True)
+    results=[];summ=[];nextsignal=[]
+    for name in ['V1','B']:
+        for h in HORIZONS:
+            rec=evaluate(fac.index,fac,trades,name,h)
+            if len(rec)<100:raise RuntimeError(f'{name},h{h}: only {len(rec)} valid weekly predictions; refuse to report')
+            results.append(rec)
+            m=metrics(rec);summ.append(m)
+            print(name,'h',h,'n',len(rec),'strategy%',round(m['strategy_total_pct'],2),
+                  'benchmark%',round(m['etf_buyhold_pct'],2),'acc%',round(m['accuracy_pct'],2),flush=True)
+            nextsignal+=last_model_predictions(fac.index,fac,trades,name,h)
+    summary=pd.DataFrame(summ)
+    records=pd.concat(results,ignore_index=True)
+    records.to_csv(ROOT/'weekly_v1b_predictions_backtest.csv',index=False,encoding='utf-8-sig')
+    summary.to_csv(ROOT/'weekly_v1b_summary.csv',index=False,encoding='utf-8-sig')
+    pd.DataFrame(nextsignal).to_csv(ROOT/'latest_signal_research_only.csv',index=False,encoding='utf-8-sig')
+    # align by actual shared range if different h initial: honest benchmarks only for each model-specific universe
+    report=f'''# 中证500 周频 V1/B 探索性研究（自动生成）\n\n**尚未对接实盘、不能承诺未来收益。**\n\n本次8组组合：V1和B分别预测未来t+1、t+2、t+4、t+8周的**该周单周ETF持有收益**。\n\n中美债券使用原月频研究的“中方最后可用、美国周均”混合口径。汇率、广义美元指数使用美联储H.10日度数据（优先美联储官网、FRED备用）的周均，保留原始来源和缺失值。\n\n每周五收集因子，保守到下一周周四或周五开盘开始交易。中证500指数下一可交易周收益是回归训练标签，510500 ETF复权开盘到开盘收益用于策略回测。\n\n采用从2016年开始扩展窗口OLS；研究回测开始于2021年3月。仅使用在预测时点已经结束的历史标签，不用目标周未来值参与训练。\n\n每次仓位从0到1或1到0，扣交易成本0.1%，现金收益暂按零。成本尚不包含ETF开盘冲击、真实报单限制及基金实际分红处理。\n\n|模型|预测期(周)|有效周|累计策略%|ETF买入持有%|方向准确率%|最大回撤%|年化Alpha%|HAC p值|\n|---|---:|---:|---:|---:|---:|---:|---:|---:|\n'''
+    for m in summ:
+        report+=f"|{m['model']}|{m['horizon_weeks']}|{m['n']}|{m['strategy_total_pct']:.2f}|{m['etf_buyhold_pct']:.2f}|{m['accuracy_pct']:.2f}|{m['max_drawdown_pct']:.2f}|{m['alpha_annual_pct']:.2f}|{m['alpha_pvalue_HAC4']:.3g}|\n"
+    report+='''\n## 数据质量与限制\n\n- 原始数据来源与有效日期见 `data_quality.json`，全量逐周因子见 `weekly_macro_factors.csv`。\n- 严格区分真实指数、510500 ETF以及交易时点。ETF日度复权开盘价仅为历史代理价格，不是用户可保证成交的价格。\n- 美联储H.10的外汇与广义美元指数通常于美国星期一16:15公布上一周观测；美国节假日推迟。周四交易缓冲是假设，未逐次核对历史实际公布日志。\n- 国债收益率日度数据可能含周末记录；这份程序剔除非周一至周五的债券数据，并保留缺失值。\n- 以过去数据不断选取V1/B/horizon属于历史探索，多次比较的名义显著性不可当作独立证据。\n- 项目之前已建立的月频V1/B不会在本次执行中修改。\n'''
+    (ROOT/'research_report.md').write_text(report,encoding='utf-8')
+    print('OK: generated data and reports in',ROOT,flush=True)
+
+if __name__=='__main__': main()
