@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""CSI500 weekly experiments A/C/D, comparable to V8 V1/B.
+
+Tests forward 1/2/4/8 week cumulative index price return.
+All real inputs from existing macro-open-data repository; never invent/interpolate 2Y yields.
+Research-only, not an investable performance series or a real-time vintage proof.
+"""
+from __future__ import annotations
+import argparse, hashlib, json, platform
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+from scipy.stats import binomtest
+
+HORIZONS=(1,2,4,8)
+MODELS={
+ 'V1': ['d_spread_10Y','fx_log_change','dollar_log_change'],
+ 'B':  ['d_spread_5Y','fx_log_change','dollar_log_change'],
+ 'A':  ['d_spread_2Y','fx_log_change','dollar_log_change'],
+ 'C':  ['d_spread_10Y','d_cn_curve_10_minus_2','fx_log_change','dollar_log_change'],
+ 'D':  ['d_spread_10Y','d_us_curve_10_minus_2','fx_log_change','dollar_log_change'],
+}
+WINDOWS={'expanding':None,'156w':156,'208w':208,'260w':260}
+THRESHOLDS=(-.3,-.2,-.1,0,.1,.2,.3)
+EVAL_START=pd.Timestamp('2021-03-05')
+MIN_TRAIN=130
+COST_SIDE=.001
+
+def save(obj, path):
+    obj.to_csv(path,index=False,encoding='utf-8-sig')
+
+def hashfile(p):
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+def Friday(d):
+    return d + pd.to_timedelta(4-d.dt.weekday,unit='D')
+
+def weekly_bond_stats(raw):
+    """China: last available *weekday* observation; USA: weekly daily mean.
+    Week is Monday-Friday China/US calendar Friday; no forward-fill across empty weeks.
+    """
+    r=raw.copy()
+    r=r[r['日期'].dt.weekday<5]
+    r['week_end']=Friday(r['日期'])
+    result=pd.DataFrame(index=pd.Index(sorted(r.week_end.unique()),name='week_end'))
+    for tenor in (2,5,10):
+        cn=f'CN_{tenor}Y_pct';us=f'US_{tenor}Y_pct'
+        result[f'CN_{tenor}Y_last']=r.dropna(subset=[cn]).groupby('week_end')[cn].last()
+        result[f'US_{tenor}Y_avg']=r.dropna(subset=[us]).groupby('week_end')[us].mean()
+        result[f'CN_{tenor}Y_last_date']=r.dropna(subset=[cn]).groupby('week_end')['日期'].last()
+    return result.reset_index()
+
+def load_inputs(root, bond_csv):
+    p_macro=root/'weekly_macro_factors.csv'
+    p_daily=root/'csi500_index_daily.csv'
+    for p in (p_macro,p_daily,bond_csv):
+        if not p.exists(): raise FileNotFoundError(f'Missing historical input: {p}')
+    m=pd.read_csv(p_macro,encoding='utf-8-sig',parse_dates=['week_end']).sort_values('week_end')
+    d=pd.read_csv(p_daily,encoding='utf-8-sig',parse_dates=['date']).sort_values('date')
+    b=pd.read_csv(bond_csv,encoding='utf-8-sig',parse_dates=['日期']).sort_values('日期')
+    for col in ('week_end','CN_10Y_last','US_10Y_avg','CN_5Y_last','US_5Y_avg',
+                'd_spread_10Y','d_spread_5Y','fx_log_change','dollar_log_change'):
+        if col not in m:raise ValueError(f'Macro file lacks {col}')
+    for col in ('date','open','close'):
+        if col not in d:raise ValueError(f'Index daily file lacks {col}')
+    for col in ('日期',*[f'{country}_{t}Y_pct' for country in ('CN','US') for t in (2,5,10)]):
+        if col not in b:raise ValueError(f'Bond daily file lacks {col}')
+    for label,df,col in [('macro',m,'week_end'),('daily',d,'date'),('bond',b,'日期')]:
+        if df[col].isna().any() or df[col].duplicated().any():raise ValueError(f'Null/duplicate dates: {label}')
+    for country in ('CN','US'):
+        for tenor in (2,5,10):
+            col=f'{country}_{tenor}Y_pct'; b[col]=pd.to_numeric(b[col],errors='coerce')
+    if len(m)<400 or len(d)<1500 or len(b)<1500: raise ValueError('Historical input too short')
+    if (m.week_end.dt.weekday!=4).any():raise ValueError('Expected Friday week labels')
+    # A known incorrect 2016-01-01 market record in the original daily index archive.
+    removed=int((d.date==pd.Timestamp('2016-01-01')).sum())
+    d=d[(d.date.dt.weekday<5)&(d.date!=pd.Timestamp('2016-01-01'))].copy()
+    if not (d[['open','close']].gt(0).all().all()):raise ValueError('Nonpositive index quotes')
+    if (d.close.pct_change().abs()>0.30).any():raise ValueError('Daily index jump >30%')
+    wk=weekly_bond_stats(b)
+    audit=[]
+    joined=m.merge(wk,on='week_end',how='left',validate='one_to_one',suffixes=('','_from_bondfile'))
+    # Cross-check 5Y and 10Y values separately; weekly file is the historical baseline.
+    for ten in (5,10):
+        for f in ('CN_{}_Y_last','US_{}_Y_avg'):
+            col=f.format(ten).replace('_Y','Y')
+            # e.g. CN_5Y_last, US_10Y_avg
+            old=joined[col].to_numpy(float)
+            re=joined[f'{col}_from_bondfile'].to_numpy(float)
+            ok=np.isfinite(old)&np.isfinite(re)
+            maxerr=float(np.max(abs(old[ok]-re[ok]))) if ok.any() else np.nan
+            mismatch=int((abs(old[ok]-re[ok])>1e-4).sum())
+            audit.append({'series':col,'comparable_weeks':int(ok.sum()),
+                 'mismatch_gt_0p0001_pp':mismatch,'max_abs_difference_pp':maxerr,
+                 'coverage_archived':int(np.isfinite(old).sum()),'coverage_rebuilt':int(np.isfinite(re).sum())})
+    audited=pd.DataFrame(audit)
+    if audited['comparable_weeks'].min()<400:
+        raise ValueError('Not enough 5Y/10Y weeks to verify bond source consistency')
+    # Never let a changed/different 2Y source silently enter the published V8 factor system.
+    if (audited.max_abs_difference_pp>.05).any():
+        raise ValueError('Bond daily and archived weekly series disagree by >0.05 percentage points; audit source before regression. '+audited.to_json(orient='records'))
+    # The new 2Y data were NOT part of the weekly V8 archived features.
+    joined['d_spread_2Y']=(joined['CN_2Y_last']-joined['US_2Y_avg']).diff()
+    joined['d_cn_curve_10_minus_2']=(joined['CN_10Y_last']-joined['CN_2Y_last']).diff()
+    joined['d_us_curve_10_minus_2']=(joined['US_10Y_avg']-joined['US_2Y_avg']).diff()
+    if joined[['d_spread_2Y','d_cn_curve_10_minus_2','d_us_curve_10_minus_2']].notna().sum().min()<400:
+        raise ValueError('Insufficient valid 2Y weekly features for full history')
+    inputs=[{'file':str(p),'rows':len(df),'sha256':hashfile(p)}
+       for p,df in [(p_macro,m),(p_daily,d),(bond_csv,b)]]
+    return joined.reset_index(drop=True),d.reset_index(drop=True),audited,inputs,removed
+
+def construct_targets(fac,daily):
+    # Identical time convention to V8: first China trading-day open AFTER signal Friday,
+    # and final China trading-day close in the target week Friday+h.
+    w=daily.assign(week_end=Friday(daily.date)).groupby('week_end',as_index=True).agg(exit_day=('date','max'),exit_close=('close','last'))
+    dates=daily.date.to_numpy(dtype='datetime64[ns]');opens=daily.open.to_numpy(float)
+    out=[]
+    for i,t in enumerate(fac.week_end):
+        ti=np.datetime64(t)
+        j=int(np.searchsorted(dates,ti,side='right'))
+        has=j<len(dates) and dates[j]<=ti+np.timedelta64(14,'D')
+        start=dates[j] if has else np.datetime64('NaT')
+        startprice=float(opens[j]) if has else np.nan
+        for h in HORIZONS:
+            t_end=t+pd.Timedelta(weeks=h)
+            if t_end in w.index and has:
+                end=w.loc[t_end,'exit_day']; close=float(w.loc[t_end,'exit_close'])
+                realized=100*(close/startprice-1) if pd.Timestamp(start)<=end else np.nan
+            else: end=pd.NaT;close=np.nan;realized=np.nan
+            out.append({'signal_week_index':i,'signal_week':t,'horizon_weeks':h,
+                'entry_day':pd.Timestamp(start) if has else pd.NaT,'entry_open':startprice,
+                'target_week':t_end,'exit_day':end,'exit_close':close,
+                'actual_cum_pct':realized})
+    return pd.DataFrame(out)
+
+def mean_hac(x,lags):
+    x=np.asarray(x,float)
+    if len(x)<25 or not np.isfinite(x).all() or np.std(x)<1e-12:return np.nan,np.nan
+    obj=sm.OLS(x,np.ones((len(x),1))).fit(cov_type='HAC',cov_kwds={'maxlags':lags})
+    return float(obj.tvalues[0]),float(obj.pvalues[0])
+
+def holm(pvals):
+    p=np.where(np.isfinite(pvals),pvals,1.);order=np.argsort(p)
+    adjusted=np.ones(len(p));m=0
+    for rank,i in enumerate(order):
+        m=max(m,(len(p)-rank)*p[i]);adjusted[i]=min(m,1.)
+    return adjusted
+
+def fit_all(fac,targets):
+    predictions=[]; coefs=[]; last=[]
+    for name,cols in MODELS.items():
+        X=fac[cols].to_numpy(float)
+        finite=np.isfinite(X).all(axis=1)
+        for h in HORIZONS:
+            t=targets[targets.horizon_weeks==h].sort_values('signal_week_index')
+            y=t.actual_cum_pct.to_numpy(float)
+            ends=t.exit_day.to_numpy(dtype='datetime64[ns]')
+            for i in range(len(fac)):
+                if fac.week_end.iloc[i]<EVAL_START or not finite[i]:continue
+                eligible=np.flatnonzero(np.isfinite(y[:i]) & finite[:i] & (ends[:i]<=np.datetime64(fac.week_end.iloc[i])))
+                if len(eligible)<MIN_TRAIN:continue
+                for win,ntrain in WINDOWS.items():
+                    inds=eligible if ntrain is None else eligible[-ntrain:]
+                    fit=sm.OLS(y[inds],sm.add_constant(X[inds],has_constant='add')).fit()
+                    prediction=float(fit.params@np.r_[1.,X[i]])
+                    prior_mean=float(np.mean(y[inds][-52:]))
+                    predictions.append({'model':name,'horizon_weeks':h,'window':win,
+                        'signal_week':fac.week_end.iloc[i],'signal_week_index':i,
+                        'train_n':len(inds),'pred_cumulative_pct':prediction,
+                        'naive_cumulative_pct':prior_mean,'actual_cumulative_pct':y[i],
+                        'has_realized_label':bool(np.isfinite(y[i])),'entry_day':t.entry_day.iloc[i],
+                        'exit_day':t.exit_day.iloc[i], 'r2_train':float(fit.rsquared),
+                        'adj_r2_train':float(fit.rsquared_adj)})
+                    if win=='expanding':
+                        robust=fit.get_robustcov_results(cov_type='HAC',maxlags=min(2*h+4,len(inds)//3))
+                        for k,param in enumerate(['intercept',*cols]):
+                            coefs.append({'model':name,'horizon_weeks':h,'signal_week':fac.week_end.iloc[i],
+                               'parameter':param,'coef':float(fit.params[k]),'hac_se':float(robust.bse[k]),
+                               'hac_t':float(robust.tvalues[k]),'hac_p':float(robust.pvalues[k]),
+                               'train_n':len(inds),'r2_train':float(fit.rsquared)})
+                        last.append({'model':name,'horizon_weeks':h,'signal_week':fac.week_end.iloc[i],
+                          'train_n':len(inds),'pred_cumulative_pct':prediction,
+                          **{'beta_'+p:float(fit.params[k]) for k,p in enumerate(['intercept',*cols])}})
+    pred=pd.DataFrame(predictions);reg=pd.DataFrame(coefs)
+    last=pd.DataFrame(last).sort_values('signal_week').groupby(['model','horizon_weeks']).tail(1)
+    return pred,reg,last
+
+def skill_table(pred):
+    rows=[]
+    for (m,h,window),g in pred.groupby(['model','horizon_weeks','window']):
+        g=g[g.has_realized_label].sort_values('signal_week')
+        if len(g)<20:continue
+        y=g.actual_cumulative_pct.to_numpy(float);p=g.pred_cumulative_pct.to_numpy(float);b=g.naive_cumulative_pct.to_numpy(float)
+        errp=y-p;errb=y-b
+        model_correct=(p>0)==(y>0);base_correct=(b>0)==(y>0)
+        t_mse,p_mse=mean_hac(errb**2-errp**2,max(8,2*h))
+        t_hit,p_hit=mean_hac(model_correct.astype(float)-base_correct.astype(float),max(8,2*h))
+        a=int(np.sum(model_correct & ~base_correct));c=int(np.sum(~model_correct & base_correct))
+        rows.append({'model':m,'horizon_weeks':h,'window':window,'n':len(g),
+          'first_signal_week':g.signal_week.min().date(),'last_signal_week':g.signal_week.max().date(),
+          'direction_hit_pct':100*np.mean(model_correct),'naive_hit_pct':100*np.mean(base_correct),
+          'market_up_pct':100*np.mean(y>0),'predicted_up_pct':100*np.mean(p>0),
+          'rmse_pctpoints':float(np.sqrt(np.mean(errp**2))),
+          'naive_rmse_pctpoints':float(np.sqrt(np.mean(errb**2))),
+          'mae_pctpoints':float(np.mean(np.abs(errp))),
+          'oos_r2_vs_rolling_52_mean':float(1-sum(errp**2)/sum(errb**2)) if sum(errb**2)>0 else np.nan,
+          'hac_p_mse_advantage':p_mse,'hac_p_hit_advantage':p_hit,
+          'mcnemar_p':float(binomtest(min(a,c),a+c,.5).pvalue) if a+c else 1.,
+          'mean_predicted_cum_pct':float(np.mean(p)), 'mean_actual_cum_pct':float(np.mean(y))})
+    result=pd.DataFrame(rows).sort_values(['window','model','horizon_weeks'])
+    for col in ('hac_p_mse_advantage','hac_p_hit_advantage','mcnemar_p'):
+        result[f'{col}_holm20']=np.nan
+        for name,g in result.groupby('window'):
+            result.loc[g.index,f'{col}_holm20']=holm(g[col].to_numpy(float))
+    return result
+
+def coefficient_stability(reg):
+    z=reg.sort_values('signal_week')
+    s=z.groupby(['model','horizon_weeks','parameter']).agg(n=('coef','size'),
+       beta_mean=('coef','mean'),beta_sd=('coef','std'),beta_min=('coef','min'),
+       beta_max=('coef','max'),share_positive=('coef',lambda x:float(np.mean(x>0))),
+       share_hac_p_lt_0p05=('hac_p',lambda x:float(np.mean(x<.05))),
+       mean_training_r2=('r2_train','mean')).reset_index()
+    last=z.groupby(['model','horizon_weeks','parameter']).tail(1)[['model','horizon_weeks','parameter','coef','hac_p','signal_week']]
+    return s.merge(last,on=['model','horizon_weeks','parameter']).rename(columns={'coef':'latest_beta','hac_p':'latest_hac_p','signal_week':'latest_signal_week'})
+
+def phase_table(pred,thresh=0,cost_side=COST_SIDE):
+    rows=[];trade=[]
+    for (m,h,window),g in pred.groupby(['model','horizon_weeks','window']):
+        g=g[g.has_realized_label].sort_values('signal_week')
+        for phase in range(h):
+            x=g[g.signal_week_index%h==phase]
+            if len(x)<12:continue
+            y=x.actual_cumulative_pct.to_numpy(float)/100
+            w=(x.pred_cumulative_pct.to_numpy(float)>thresh).astype(int)
+            sim=w*y-2*cost_side*w
+            rows.append({'model':m,'horizon_weeks':h,'window':window,'phase':phase,
+               'n_slots':len(x),'n_long':int(w.sum()),'threshold_pctpoints':thresh,
+               'simulated_cumulative_pct':100*np.expm1(np.log1p(sim).sum()),
+               'matched_index_cumulative_pct':100*np.expm1(np.log1p(y).sum()),
+               'simulated_max_dd_pct':100*max_drawdown(sim)})
+            if window=='expanding':
+                for xx,ww,ss in zip(x.itertuples(index=False),w,sim):
+                    trade.append({'model':m,'horizon_weeks':h,'phase':phase,
+                        'signal_week':xx.signal_week,'entry_day':xx.entry_day,'exit_day':xx.exit_day,
+                        'pred_cumulative_pct':xx.pred_cumulative_pct,
+                        'actual_cumulative_pct':xx.actual_cumulative_pct,'weight':int(ww),
+                        'simulated_slot_net_pct':100*ss})
+    return pd.DataFrame(rows),pd.DataFrame(trade)
+
+def max_drawdown(rets):
+    wealth=np.r_[1,np.cumprod(1+np.asarray(rets,float))]
+    return float(np.min(wealth/np.maximum.accumulate(wealth)-1))
+
+def threshold_stress(pred):
+    rows=[]
+    for (m,h,window),g in pred.groupby(['model','horizon_weeks','window']):
+        g=g[g.has_realized_label].sort_values('signal_week')
+        for threshold in THRESHOLDS:
+            for phase in range(h):
+                x=g[g.signal_week_index%h==phase]
+                if len(x)<12:continue
+                y=x.actual_cumulative_pct.to_numpy(float)/100
+                w=(x.pred_cumulative_pct.to_numpy(float)>threshold).astype(int)
+                rr=w*y-2*COST_SIDE*w
+                rows.append({'model':m,'horizon_weeks':h,'window':window,'threshold_pctpoints':threshold,
+                    'phase':phase,'n_slots':len(x),'buy_pct':100*np.mean(w),
+                    'strategy_slot_cumulative_pct':100*np.expm1(np.log1p(rr).sum()),
+                    'matched_index_slot_pct':100*np.expm1(np.log1p(y).sum())})
+    return pd.DataFrame(rows)
+
+def stages(pred):
+    t=pred[(pred.window=='expanding')&pred.has_realized_label].copy()
+    t['regime']=pd.cut(t.signal_week.dt.year,bins=[2020,2022,2024,2026],labels=['2021-22','2023-24','2025-26'])
+    rows=[]
+    for (m,h,s),g in t.groupby(['model','horizon_weeks','regime'],observed=True):
+        if len(g)<15:continue
+        y=g.actual_cumulative_pct.to_numpy(float);p=g.pred_cumulative_pct.to_numpy(float);b=g.naive_cumulative_pct.to_numpy(float)
+        rows.append({'model':m,'horizon_weeks':h,'regime':s,'n':len(g),
+          'hit_pct':100*np.mean((p>0)==(y>0)), 'naive_hit_pct':100*np.mean((b>0)==(y>0)),
+          'rmse_pctpoints':float(np.sqrt(np.mean((y-p)**2))),
+          'oos_r2_vs_mean':float(1-sum((y-p)**2)/sum((y-b)**2))})
+    return pd.DataFrame(rows)
+
+def matched_comparison(pred):
+    a=pred[(pred.window=='expanding')&pred.has_realized_label]
+    rows=[]
+    for h in HORIZONS:
+        z=a[a.horizon_weeks==h]
+        wide=z.pivot_table(index='signal_week',columns='model',values='pred_cumulative_pct').dropna()
+        actual=z.drop_duplicates('signal_week').set_index('signal_week').loc[wide.index,'actual_cumulative_pct']
+        y=actual.to_numpy(float)
+        for candidate in ('A','C','D'):
+            for baseline in ('V1','B'):
+                p=wide[candidate].to_numpy(float);q=wide[baseline].to_numpy(float)
+                t,pval=mean_hac((y-q)**2-(y-p)**2,max(8,2*h))
+                rows.append({'candidate':candidate,'baseline':baseline,'horizon_weeks':h,
+                  'common_n':len(wide),'same_direction_pct':100*np.mean((p>0)==(q>0)),
+                  'corr_predictions':float(np.corrcoef(p,q)[0,1]) if np.std(p)>0 and np.std(q)>0 else np.nan,
+                  'candidate_hit_pct':100*np.mean((p>0)==(y>0)),
+                  'baseline_hit_pct':100*np.mean((q>0)==(y>0)),
+                  'candidate_rmse_pctpoints':np.sqrt(np.mean((p-y)**2)),
+                  'baseline_rmse_pctpoints':np.sqrt(np.mean((q-y)**2)),
+                  'hac_p_difference_of_squared_errors':pval})
+    return pd.DataFrame(rows)
+
+def factor_ablation(fac,target,pred):
+    core=pred[(pred.window=='expanding')&pred.has_realized_label]
+    details=[]
+    for name in ('A','C','D'):
+        cols=MODELS[name];X=fac[cols].to_numpy(float);valid=np.isfinite(X).all(axis=1)
+        for h in HORIZONS:
+            t=target[target.horizon_weeks==h].sort_values('signal_week_index')
+            y=t.actual_cum_pct.to_numpy(float);ends=t.exit_day.to_numpy(dtype='datetime64[ns]')
+            subset=core[(core.model==name)&(core.horizon_weeks==h)]
+            for row in subset.itertuples(index=False):
+                i=int(row.signal_week_index)
+                hist=np.flatnonzero(np.isfinite(y[:i])&valid[:i]&(ends[:i]<=np.datetime64(fac.week_end.iloc[i])))
+                for drop in cols:
+                    remain=[j for j,c in enumerate(cols) if c!=drop]
+                    fit=sm.OLS(y[hist],sm.add_constant(X[hist][:,remain],has_constant='add')).fit()
+                    p=float(fit.params@np.r_[1.,X[i,remain]])
+                    details.append({'model':name,'horizon_weeks':h,'signal_week':row.signal_week,
+                      'dropped_factor':drop,'pred_without_factor_pct':p,
+                      'pred_full_pct':row.pred_cumulative_pct,'actual_cum_pct':row.actual_cumulative_pct})
+    detail=pd.DataFrame(details); summaries=[]
+    for (m,h,drop),z in detail.groupby(['model','horizon_weeks','dropped_factor']):
+        y=z.actual_cum_pct.to_numpy(float);p=z.pred_without_factor_pct.to_numpy(float);full=z.pred_full_pct.to_numpy(float)
+        t,pval=mean_hac((y-p)**2-(y-full)**2,max(8,2*h))
+        summaries.append({'model':m,'horizon_weeks':h,'dropped_factor':drop,'n':len(z),
+          'rmse_without_pctpoints':np.sqrt(np.mean((y-p)**2)),
+          'rmse_full_pctpoints':np.sqrt(np.mean((y-full)**2)),
+          'hit_without_pct':100*np.mean((p>0)==(y>0)),
+          'hit_full_pct':100*np.mean((full>0)==(y>0)),
+          'hac_p_mse_full_vs_without':pval})
+    return detail,pd.DataFrame(summaries)
+
+def verify_v8_history(pred,root):
+    prior=root/'cumulative_v8'/'all_oos_forecasts_and_windows.csv'
+    if not prior.exists():return pd.DataFrame([{'status':'V8 archive not present','matched_rows':0}])
+    old=pd.read_csv(prior,encoding='utf-8-sig')
+    sub=pred[pred.model.isin(['V1','B'])]
+    keys=['model','horizon_weeks','window','signal_week']
+    old['signal_week']=pd.to_datetime(old.signal_week)
+    z=sub.merge(old,on=keys,suffixes=('_new','_v8'),validate='one_to_one',how='inner')
+    if z.empty:return pd.DataFrame([{'status':'No intersecting V8 predictions','matched_rows':0}])
+    err=abs(z.pred_cumulative_pct_new-z.pred_cumulative_pct_v8)
+    both=np.isfinite(z.actual_cumulative_pct_new)&np.isfinite(z.actual_cumulative_pct_v8)
+    yerr=abs(z.loc[both,'actual_cumulative_pct_new']-z.loc[both,'actual_cumulative_pct_v8'])
+    return pd.DataFrame([{'status':'checked','matched_rows':len(z),
+       'pred_max_abs_pp':float(err.max()),'pred_diff_gt_1e6':int((err>1e-6).sum()),
+       'actual_max_abs_pp':float(yerr.max()) if len(yerr) else np.nan,
+       'v8_reference_path':str(prior)}])
+
+def latest_forecasts(pred):
+    subset=pred[pred.window=='expanding'].sort_values('signal_week')
+    z=subset.groupby(['model','horizon_weeks']).tail(1).copy()
+    z['forecast_through_week']=z.signal_week+pd.to_timedelta(7*z.horizon_weeks,unit='D')
+    return z.sort_values(['model','horizon_weeks'])
+
+def run(root,bonds,out):
+    out.mkdir(parents=True,exist_ok=True)
+    fac,daily,dataaudit,inputs,removed=load_inputs(root,bonds)
+    save(dataaudit,out/'bond_crosscheck_5y_10y.csv')
+    save(fac[['week_end','CN_2Y_last','US_2Y_avg','d_spread_2Y',
+              'd_cn_curve_10_minus_2','d_us_curve_10_minus_2','fx_log_change','dollar_log_change']],
+              out/'new_2y_weekly_factors_and_curves.csv')
+    targets=construct_targets(fac,daily)
+    pred,reg,last=fit_all(fac,targets)
+    skill=skill_table(pred)
+    stable=coefficient_stability(reg)
+    phase,trades=phase_table(pred)
+    stress=threshold_stress(pred)
+    stages_df=stages(pred)
+    matched=matched_comparison(pred)
+    ablation,ablstat=factor_ablation(fac,targets,pred)
+    latest=latest_forecasts(pred)
+    compare=verify_v8_history(pred,root)
+    for obj,name in [
+      (targets,'targets_cumulative_1_2_4_8_weeks.csv'),
+      (pred,'all_predictions_20_models_4_windows.csv'),
+      (reg,'rolling_ols_HAC_coefficients.csv'),
+      (last,'latest_ols_coefficients.csv'),
+      (skill,'oos_prediction_skill_20_models.csv'),
+      (stable,'ols_coefficient_stability.csv'),
+      (phase,'nonoverlap_matched_phase_returns.csv'),
+      (trades,'nonoverlap_phase_trade_details.csv'),
+      (stress,'window_threshold_phase_stress.csv'),
+      (stages_df,'three_regimes_oos_skill.csv'),
+      (matched,'A_C_D_vs_V1_B_matched_comparison.csv'),
+      (ablation,'factor_ablation_predictions.csv'),
+      (ablstat,'factor_ablation_summary.csv'),
+      (latest,'latest_20_cumulative_forecasts.csv'),
+      (compare,'V8_V1_B_reproduction_check.csv')]:
+        save(obj,out/name)
+    phase_summary=phase[phase.window=='expanding'].groupby(['model','horizon_weeks']).agg(
+      n_phases=('phase','size'),min_strategy=('simulated_cumulative_pct','min'),
+      median_strategy=('simulated_cumulative_pct','median'),max_strategy=('simulated_cumulative_pct','max'),
+      min_matched_index=('matched_index_cumulative_pct','min'),
+      max_matched_index=('matched_index_cumulative_pct','max')).reset_index()
+    save(phase_summary,out/'nonoverlap_phase_dispersion.csv')
+    sample=skill[skill.window=='expanding'].sort_values(['model','horizon_weeks'])
+    short=sample[sample.model.isin(['A','C','D'])]
+    summary=['# 中证500：周频国债期限实验 A、C、D（V9）','',
+      '**研究目标：** 按照最近V8的累计收益定义，周五形成信号，预测后续1/2/4/8周整个持有区间的中证500价格指数累计收益。不是第N周单周收益。','',
+      '## 实验定义','',
+      '- A：Δ（中国2年期周末收益率－美国2年期周均收益率），加人民币对美元汇率、广义美元指数的周度变化。',
+      '- C：原V1三因子加Δ（中国10年期周末收益率－中国2年期周末收益率）。',
+      '- D：原V1三因子加Δ（美国10年期周均收益率－美国2年期周均收益率）。',
+      '- V1和B作为对照：分别使用10年和5年中美国债利差变化，加原有两个汇率因素。',
+      '- A/C/D所需2年期日度数据，直接使用本GitHub项目中已经保存的data/china_us_yields_daily.csv；从未使用月度值冒充周度值。',
+      '- 源于历史样本的观察周频因子未完成逐时点数据版本认证；模型统计量是探索性结果，不能当成可实现投资收益。',
+      '- 累计持有期收益重叠，严禁按周连乘。只在同一起始相位上取互不重叠持有区间，比较同相位指数收益。',
+      '- 指数不可交易，策略模拟0.1%单边费用仅为假设，不能代表真实ETF全部交易成本。','',
+      '## 样本外表现（扩展窗口）：A/C/D','', '```',
+      short[['model','horizon_weeks','n','direction_hit_pct','naive_hit_pct','rmse_pctpoints',
+        'oos_r2_vs_rolling_52_mean','hac_p_mse_advantage','hac_p_mse_advantage_holm20']].to_string(index=False,float_format=lambda v:f'{v:.4f}'),
+      '```','', '## 同口径对照：V1/B','', '```',
+      sample[sample.model.isin(['V1','B'])][['model','horizon_weeks','n','direction_hit_pct',
+        'rmse_pctpoints','oos_r2_vs_rolling_52_mean']].to_string(index=False,float_format=lambda v:f'{v:.4f}'),
+      '```','', '## A/C/D非重叠持有相位范围（只用于压力测试）','', '```',
+      phase_summary[phase_summary.model.isin(['A','C','D'])].to_string(index=False,float_format=lambda v:f'{v:.3f}'),
+      '```','', '## V8预测复现检查','', '```',compare.to_string(index=False),'```','',
+      '## 主要输出','',
+      '- 周度2Y衍生因子与5Y/10Y交叉检验。','- 每次样本外预测、各窗口、完整HAC回归结果。',
+      '- 训练窗口与七档买入阈值、三阶段、因子消融、逐期限V1/B配对比较。',
+      '- 非重叠持有相位结果与逐次交易明细，逐期预测最新表。','',
+      '## 数据边界','', f'- 截至此次运行，指数最后有效交易日：{daily.date.max().date()}，周频宏观数据最后标签：{fac.week_end.max().date()}。',
+      f'- 自动剔除原指数数据中伪造的2016-01-01非交易日记录：{removed}条。',
+      '- 注意：不允许通过这次实验对A/C/D进行事后挑最优，然后宣称统计显著；必须留出未来未经模型挑选的时间段检验。','',
+      '## 输入文件哈希','', '```json',json.dumps(inputs,ensure_ascii=False,indent=2),'```']
+    (out/'V9_ACD_REPORT.md').write_text('\n'.join(summary),encoding='utf-8')
+    metadata={'status':'V9_ACD_AND_V1_B_COMPLETE','model_groups':5,'prediction_definitions':20,
+       'training_windows':list(WINDOWS),'inputs':inputs,'python':platform.python_version(),
+       'rows_oos':len(pred),'distinct_signal_weeks':int(pred.signal_week.nunique()),
+       'last_signal_week':str(latest.signal_week.max().date())}
+    (out/'V9_RUN_METADATA.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding='utf-8')
+    print('V9_ACD_OK',json.dumps({k:v for k,v in metadata.items() if k!='inputs'},ensure_ascii=False))
+
+if __name__=='__main__':
+    p=argparse.ArgumentParser();p.add_argument('--root',type=Path,default=Path('research/weekly_index_only'))
+    p.add_argument('--bonds',type=Path,default=Path('data/china_us_yields_daily.csv'))
+    p.add_argument('--out',type=Path,default=Path('research/weekly_index_only/acd_v9'))
+    a=p.parse_args();run(a.root,a.bonds,a.out)

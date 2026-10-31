@@ -1,0 +1,2 @@
+﻿status,matched_rows,pred_max_abs_pp,pred_diff_gt_1e6,actual_max_abs_pp,v8_reference_path
+checked,9056,8.881784197001252e-16,0,3.552713678800501e-15,research/weekly_index_only/cumulative_v8/all_oos_forecasts_and_windows.csv

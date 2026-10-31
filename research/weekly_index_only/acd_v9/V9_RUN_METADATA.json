@@ -1,0 +1,32 @@
+{
+  "status": "V9_ACD_AND_V1_B_COMPLETE",
+  "model_groups": 5,
+  "prediction_definitions": 20,
+  "training_windows": [
+    "expanding",
+    "156w",
+    "208w",
+    "260w"
+  ],
+  "inputs": [
+    {
+      "file": "research/weekly_index_only/weekly_macro_factors.csv",
+      "rows": 569,
+      "sha256": "8b9870ba50a4bba751f1ea38e1c8a7fa0cb9de45479806e11b4df07d115979c1"
+    },
+    {
+      "file": "research/weekly_index_only/csi500_index_daily.csv",
+      "rows": 2628,
+      "sha256": "96a864553a2e85fca161a380f6daf4b2a4f9cfda7f760649b00bc80cdf3c0978"
+    },
+    {
+      "file": "data/china_us_yields_daily.csv",
+      "rows": 2864,
+      "sha256": "b7d818244c9b087631d831b54c91f11ca0930c61291deeb1b5ad10d5b81dd82f"
+    }
+  ],
+  "python": "3.12.15",
+  "rows_oos": 22496,
+  "distinct_signal_weeks": 283,
+  "last_signal_week": "2026-10-23"
+}

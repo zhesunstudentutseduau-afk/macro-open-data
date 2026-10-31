@@ -1,0 +1,5 @@
+﻿series,comparable_weeks,mismatch_gt_0p0001_pp,max_abs_difference_pp,coverage_archived,coverage_rebuilt
+CN_5Y_last,549,0,0.0,553,549
+US_5Y_avg,561,1,0.014000000000000234,565,561
+CN_10Y_last,549,0,0.0,553,549
+US_10Y_avg,561,1,0.0013333333333322983,565,561
