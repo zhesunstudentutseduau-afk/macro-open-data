@@ -1,0 +1,16 @@
+{
+  "inputs_sha256": {
+    "pred": "ea3f2db7ba8d77ac5719d0db82f729583b09382c8ab78f315bce46823013ba53",
+    "features": "8b9870ba50a4bba751f1ea38e1c8a7fa0cb9de45479806e11b4df07d115979c1",
+    "price": "1309dce332793bda65f9c28dd089a78082eac92dc09cab2369f442ede9e520e2",
+    "summary": "a0e088a7b5421c8f569205e2f177cd59febb7a35c402e76f8d5327b42a28c297",
+    "prior_monthly_attribution": "bedf71d8ffd01d9a2633ec23fc11144edba7e119bdfc148490553bf9be06b79b"
+  },
+  "runtime_versions": {
+    "python": "3.12.15",
+    "numpy": "2.5.4",
+    "pandas": "3.1.0",
+    "statsmodels": "0.15.0"
+  },
+  "source": "repo saved historical files; no synthetic filling"
+}
