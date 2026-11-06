@@ -6,15 +6,15 @@
 
 - pred: `research/weekly_index_only/weekly_v1b_index_only_predictions_backtest.csv` (SHA256 `ea3f2db7ba8d77ac5719d0db82f729583b09382c8ab78f315bce46823013ba53`)
 
-- features: `research/weekly_index_only/weekly_macro_factors.csv` (SHA256 `8b9870ba50a4bba751f1ea38e1c8a7fa0cb9de45479806e11b4df07d115979c1`)
+- features: `research/weekly_index_only/weekly_macro_factors.csv` (SHA256 `60b814c2a3bdc157aa23b1d17aaf48ae74dcf070c28929f2aeb107ab4cf6965e`)
 
-- price: `research/weekly_index_only/weekly_index_anchors_and_returns.csv` (SHA256 `1309dce332793bda65f9c28dd089a78082eac92dc09cab2369f442ede9e520e2`)
+- price: `research/weekly_index_only/weekly_index_anchors_and_returns.csv` (SHA256 `52656779619cdbbbfcc4057226ad2844f2fd6a790f74c40c1fe7156d300dccf1`)
 
 - summary: `research/weekly_index_only/weekly_v1b_index_only_summary.csv` (SHA256 `a0e088a7b5421c8f569205e2f177cd59febb7a35c402e76f8d5327b42a28c297`)
 
 - prior_monthly_attribution: `research/weekly_index_only/audit_v6/monthly_v1_t2_reference.csv` (SHA256 `bedf71d8ffd01d9a2633ec23fc11144edba7e119bdfc148490553bf9be06b79b`)
 
-- Python及依赖：`{'python': '3.12.15', 'numpy': '2.5.4', 'pandas': '3.1.0', 'statsmodels': '0.15.0'}`。
+- Python及依赖：`{'python': '3.12.16', 'numpy': '2.5.4', 'pandas': '3.1.1', 'statsmodels': '0.15.0'}`。
 
 - 8组共同严格7日间隔的目标周：223周，自2021-03-05至2026-10-23。**此交集不连续，不能将它当作完整日历买入持有。**
 
