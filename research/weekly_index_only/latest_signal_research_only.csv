@@ -1,9 +1,9 @@
 ﻿asof_utc,model,horizon_weeks,signal_week,target_week_end,target_thursday_estimate,predicted_index_return_pct,suggested_weight,train_n,status
-2026-11-05T02:02:48.199413+00:00,V1,1,2026-10-30,2026-11-06,2026-11-05,-0.12498486443953197,0,508,backfilled research signal; not historical registered forecast
-2026-11-05T02:02:48.277778+00:00,V1,2,2026-10-30,2026-11-13,2026-11-12,0.22160384911445574,1,507,backfilled research signal; not historical registered forecast
-2026-11-05T02:02:48.355933+00:00,V1,4,2026-10-30,2026-11-27,2026-11-26,-0.006715748646466477,0,505,backfilled research signal; not historical registered forecast
-2026-11-05T02:02:48.433701+00:00,V1,8,2026-10-30,,2026-12-24,0.4540681684781587,1,502,backfilled research signal; not historical registered forecast
-2026-11-05T02:02:48.511651+00:00,B,1,2026-10-30,2026-11-06,2026-11-05,-0.24073834337138045,0,508,backfilled research signal; not historical registered forecast
-2026-11-05T02:02:48.589084+00:00,B,2,2026-10-30,2026-11-13,2026-11-12,0.2282738476662832,1,507,backfilled research signal; not historical registered forecast
-2026-11-05T02:02:48.666576+00:00,B,4,2026-10-30,2026-11-27,2026-11-26,0.12717787507426634,1,505,backfilled research signal; not historical registered forecast
-2026-11-05T02:02:48.744253+00:00,B,8,2026-10-30,,2026-12-24,0.44043268720395207,1,502,backfilled research signal; not historical registered forecast
+2026-11-12T02:11:08.731061+00:00,V1,1,2026-11-06,2026-11-13,2026-11-12,0.22675061366573937,1,509,backfilled research signal; not historical registered forecast
+2026-11-12T02:11:08.883854+00:00,V1,2,2026-11-06,2026-11-20,2026-11-19,0.06595068120166368,1,508,backfilled research signal; not historical registered forecast
+2026-11-12T02:11:09.035187+00:00,V1,4,2026-11-06,2026-12-04,2026-12-03,-0.11277819375740725,0,506,backfilled research signal; not historical registered forecast
+2026-11-12T02:11:09.188221+00:00,V1,8,2026-11-06,,2026-12-31,0.11395254549239138,1,503,backfilled research signal; not historical registered forecast
+2026-11-12T02:11:09.339136+00:00,B,1,2026-11-06,2026-11-13,2026-11-12,0.21160134844166048,1,509,backfilled research signal; not historical registered forecast
+2026-11-12T02:11:09.491474+00:00,B,2,2026-11-06,2026-11-20,2026-11-19,0.1337615427656743,1,508,backfilled research signal; not historical registered forecast
+2026-11-12T02:11:09.643663+00:00,B,4,2026-11-06,2026-12-04,2026-12-03,-0.13482928466329544,0,506,backfilled research signal; not historical registered forecast
+2026-11-12T02:11:09.795153+00:00,B,8,2026-11-06,,2026-12-31,0.18613215620312198,1,503,backfilled research signal; not historical registered forecast
