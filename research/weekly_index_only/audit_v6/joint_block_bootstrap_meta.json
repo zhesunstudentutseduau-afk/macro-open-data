@@ -1,9 +1,9 @@
 {
-  "n": 223,
+  "n": 224,
   "block_length": 8,
   "replications": 1500,
   "seed": 20261031,
-  "observed_max_HAC_t": 1.7367582278242615,
-  "joint_positive_excess_maxT_p": 0.20652898067954698,
+  "observed_max_HAC_t": 1.736521217716384,
+  "joint_positive_excess_maxT_p": 0.20319786808794138,
   "caveat": "conditional on one common selected 7-day interval sample, hindsight-selected models; historical data vintages not audited; not a tradable result"
 }
