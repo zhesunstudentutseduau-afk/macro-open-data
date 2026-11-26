@@ -17,20 +17,20 @@
   "tplus_h_convention": "factor week t -> index week t+h opening-to-next-week opening SINGLE-period return, NOT h-week compounded cumulative",
   "n_weeks_macro_V1": 540,
   "n_weeks_macro_B": 540,
-  "n_index_weekly_anchors": 537,
-  "n_complete_weekly_index_returns": 536,
+  "n_index_weekly_anchors": 538,
+  "n_complete_weekly_index_returns": 537,
   "date_ranges": {
     "idx": [
       "2016-01-04",
-      "2026-11-18"
+      "2026-11-25"
     ],
     "fx": [
       "2016-01-01",
-      "2026-11-13"
+      "2026-11-20"
     ],
     "dollar": [
       "2016-01-01",
-      "2026-11-13"
+      "2026-11-20"
     ]
   },
   "warning": [
